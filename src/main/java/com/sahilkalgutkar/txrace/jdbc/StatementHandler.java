@@ -72,9 +72,11 @@ final class StatementHandler extends ProxyHandler {
             }
             case "clearParameters" -> parameters.clear();
             default -> {
+                Object result = pass(method, args);
                 if (setsParameter(method, args)) {
-                    parameters.put((Integer) args[0], name.equals("setNull") ? null : args[1]);
+                    parameters.put((Integer) args[0], name.equals("setNull") ? null : snapshot(args[1]));
                 }
+                return result;
             }
         }
         return pass(method, args);
@@ -110,6 +112,16 @@ final class StatementHandler extends ProxyHandler {
     private static Outcome batchOutcome(Object result) {
         long[] counts = result instanceof int[] ints ? Arrays.stream(ints).asLongStream().toArray() : (long[]) result;
         return new Outcome.Batch(Arrays.stream(counts).boxed().toList());
+    }
+
+    /** Copies values a caller might reuse, so the trace keeps what was actually bound. */
+    private static Object snapshot(Object value) {
+        return switch (value) {
+            case byte[] bytes -> bytes.clone();
+            case java.util.Date date -> date.clone();
+            case java.util.Calendar calendar -> calendar.clone();
+            case null, default -> value;
+        };
     }
 
     private static boolean setsParameter(Method method, Object[] args) {

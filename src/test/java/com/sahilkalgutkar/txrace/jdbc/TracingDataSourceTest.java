@@ -11,6 +11,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
@@ -102,6 +103,50 @@ class TracingDataSourceTest {
         assertThat(step.sql()).isEqualTo("UPDATE account SET owner = ?, balance = ? WHERE id = ?");
         assertThat(step.parameters()).containsExactly(null, 75, 1);
         assertThat(traced.trace().events().getFirst().outcome()).isEqualTo(new Outcome.Updated(1));
+    }
+
+    @Test
+    void aValueTheDriverRejectsIsNotRecorded(DataSource h2) throws SQLException {
+        createAccounts(h2);
+        TracingDataSource traced = new TracingDataSource(h2);
+
+        try (Connection connection = traced.getConnection();
+             PreparedStatement update = connection.prepareStatement("UPDATE account SET balance = ? WHERE id = ?")) {
+            update.setInt(1, 5);
+            update.setInt(2, 1);
+            assertThatThrownBy(() -> update.setInt(3, 99)).isInstanceOf(SQLException.class);
+            update.executeUpdate();
+        }
+
+        assertThat(traced.trace().events().getFirst().step().parameters()).containsExactly(5, 1);
+    }
+
+    @Test
+    void recordsValuesAsTheyWereWhenBound(DataSource h2) throws SQLException {
+        try (Connection connection = h2.getConnection(); Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE blob (id INT PRIMARY KEY, data VARBINARY(4), at TIMESTAMP)");
+        }
+        TracingDataSource traced = new TracingDataSource(h2);
+        byte[] buffer = {1};
+        Timestamp at = Timestamp.valueOf("2026-01-01 00:00:00");
+
+        try (Connection connection = traced.getConnection();
+             PreparedStatement insert = connection.prepareStatement("INSERT INTO blob VALUES (?, ?, ?)")) {
+            insert.setInt(1, 1);
+            insert.setBytes(2, buffer);
+            insert.setTimestamp(3, at);
+            insert.addBatch();
+            buffer[0] = 2;
+            at.setTime(Timestamp.valueOf("2027-01-01 00:00:00").getTime());
+            insert.setInt(1, 2);
+            insert.setBytes(2, buffer);
+            insert.setTimestamp(3, at);
+            insert.addBatch();
+            insert.executeBatch();
+        }
+
+        assertThat(traced.trace().render()).contains(
+                "[[1, X'01', 2026-01-01 00:00:00.0], [2, X'02', 2027-01-01 00:00:00.0]]");
     }
 
     @Test
