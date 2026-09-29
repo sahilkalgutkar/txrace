@@ -7,16 +7,23 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
-/** Turns each execute call into a step, remembering the parameters bound so far. */
+/**
+ * Turns each execute call into a step, remembering the parameters bound so far and the rows added
+ * to the batch.
+ */
 final class StatementHandler extends ProxyHandler {
 
     private final ConnectionHandler connection;
     private final String sql;
     private final SortedMap<Integer, Object> parameters = new TreeMap<>();
+    // SQL strings for a plain statement, parameter lists for a prepared one.
+    private final List<Object> batch = new ArrayList<>();
 
     private StatementHandler(Statement real, ConnectionHandler connection, String sql) {
         super(real);
@@ -41,6 +48,25 @@ final class StatementHandler extends ProxyHandler {
                         prepared ? sql : (String) args[0], prepared ? bound() : List.of());
                 return connection.run(step, () -> pass(method, args), result -> outcome(name, result));
             }
+            case "executeBatch", "executeLargeBatch" -> {
+                Step step = sql == null
+                        ? connection.next(Step.Kind.BATCH, joined(), List.of())
+                        : connection.next(Step.Kind.BATCH, sql, batch);
+                return connection.run(step, () -> {
+                    try {
+                        return pass(method, args);
+                    } finally {
+                        // The driver empties its batch once it has run, whether or not it worked.
+                        batch.clear();
+                    }
+                }, StatementHandler::batchOutcome);
+            }
+            case "addBatch" -> {
+                Object result = pass(method, args);
+                batch.add(args == null ? bound() : args[0]);
+                return result;
+            }
+            case "clearBatch" -> batch.clear();
             case "getConnection" -> {
                 return connection.proxy();
             }
@@ -63,6 +89,10 @@ final class StatementHandler extends ProxyHandler {
         return new ArrayList<>(parameters.values());
     }
 
+    private String joined() {
+        return batch.stream().map(String.class::cast).collect(Collectors.joining("; "));
+    }
+
     private Outcome outcome(String method, Object result) throws SQLException {
         return switch (method) {
             case "executeQuery" -> new Outcome.Rows();
@@ -75,6 +105,11 @@ final class StatementHandler extends ProxyHandler {
                 yield count == -1 ? new Outcome.Done() : new Outcome.Updated(count);
             }
         };
+    }
+
+    private static Outcome batchOutcome(Object result) {
+        long[] counts = result instanceof int[] ints ? Arrays.stream(ints).asLongStream().toArray() : (long[]) result;
+        return new Outcome.Batch(Arrays.stream(counts).boxed().toList());
     }
 
     private static boolean setsParameter(Method method, Object[] args) {
