@@ -67,6 +67,9 @@ final class ConnectionHandler extends ProxyHandler {
             case "setAutoCommit" -> {
                 return setAutoCommit(method, args);
             }
+            case "close" -> {
+                return close(method, args);
+            }
             default -> {
             }
         }
@@ -97,6 +100,23 @@ final class ConnectionHandler extends ProxyHandler {
             pass(method, args);
         }
         autoCommit = on;
+        return null;
+    }
+
+    private Object close(Method method, Object[] args) throws Throwable {
+        try {
+            if (open) {
+                // H2, PostgreSQL and connection pools all roll back work left pending at close.
+                // Doing it here puts that rollback, and the locks it releases, through the gate.
+                Connection connection = (Connection) real;
+                run(next(Step.Kind.ROLLBACK, null, List.of()), () -> {
+                    connection.rollback();
+                    return null;
+                }, result -> new Outcome.Done());
+            }
+        } finally {
+            pass(method, args);
+        }
         return null;
     }
 

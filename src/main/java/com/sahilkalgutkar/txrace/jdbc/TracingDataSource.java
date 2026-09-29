@@ -14,6 +14,9 @@ import javax.sql.DataSource;
  * A data source whose connections send every statement, commit and rollback through a
  * {@link Gate} and record it in a {@link Trace}.
  *
+ * <p>Closing a connection with work still pending rolls that work back as a step of its own,
+ * rather than leaving it to the driver.
+ *
  * <p>Code that unwraps a connection to its driver class and uses that directly is not traced.
  */
 public final class TracingDataSource implements DataSource {

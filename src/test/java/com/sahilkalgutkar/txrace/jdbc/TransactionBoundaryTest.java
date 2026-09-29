@@ -65,6 +65,7 @@ class TransactionBoundaryTest {
                 t2 INSERT INTO item VALUES (2)
                 t2 ROLLBACK
                 t3 SELECT * FROM item
+                t3 ROLLBACK
                 """);
         assertThat(traced.trace().events().get(1).outcome()).isEqualTo(new Outcome.Done());
         assertThat(count()).isEqualTo(1);
