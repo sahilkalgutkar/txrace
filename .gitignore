@@ -6,3 +6,6 @@
 .idea/
 *.iml
 .vscode/
+
+# the wrapper script downloads this on first run
+/.mvn/wrapper/maven-wrapper.jar
