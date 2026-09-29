@@ -31,6 +31,9 @@ final class ConnectionHandler extends ProxyHandler {
     private final Connection proxy;
     private int transaction = 1;
     private boolean autoCommit;
+    // True once the current transaction has sent a statement. Only then is there anything for a
+    // commit or rollback to end.
+    private boolean open;
 
     private ConnectionHandler(Connection real, int id, Gate gate, Trace trace) throws SQLException {
         super(real);
@@ -53,12 +56,12 @@ final class ConnectionHandler extends ProxyHandler {
     Object handle(Method method, Object[] args) throws Throwable {
         switch (method.getName()) {
             case "commit" -> {
-                return end(Step.Kind.COMMIT, method, args);
+                return open ? end(Step.Kind.COMMIT, method, args) : pass(method, args);
             }
             case "rollback" -> {
                 // rollback(Savepoint) undoes part of the transaction without ending it.
                 if (args == null) {
-                    return end(Step.Kind.ROLLBACK, method, args);
+                    return open ? end(Step.Kind.ROLLBACK, method, args) : pass(method, args);
                 }
             }
             case "setAutoCommit" -> {
@@ -87,7 +90,7 @@ final class ConnectionHandler extends ProxyHandler {
 
     private Object setAutoCommit(Method method, Object[] args) throws Throwable {
         boolean on = (Boolean) args[0];
-        if (on && !autoCommit) {
+        if (on && open) {
             // Turning autocommit on in the middle of a transaction commits it.
             end(Step.Kind.COMMIT, method, args);
         } else {
@@ -123,6 +126,9 @@ final class ConnectionHandler extends ProxyHandler {
         // With autocommit on, every statement is a transaction of its own, failed or not.
         if (step.endsTransaction() || autoCommit) {
             transaction++;
+            open = false;
+        } else {
+            open = true;
         }
         gate.after(step, outcome);
     }

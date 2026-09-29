@@ -109,6 +109,47 @@ class TransactionBoundaryTest {
     }
 
     @Test
+    void aCommitWithNothingToEndIsNotAStep() throws SQLException {
+        TracingDataSource traced = new TracingDataSource(h2);
+
+        try (Connection connection = traced.getConnection(); Statement statement = connection.createStatement()) {
+            connection.commit();
+            statement.executeUpdate("INSERT INTO item VALUES (1)");
+            connection.setAutoCommit(false);
+            connection.commit();
+            connection.rollback();
+            statement.executeUpdate("INSERT INTO item VALUES (2)");
+            connection.commit();
+        }
+
+        assertThat(summary(traced.trace())).isEqualTo("""
+                t1 INSERT INTO item VALUES (1)
+                t2 INSERT INTO item VALUES (2)
+                t2 COMMIT
+                """);
+    }
+
+    @Test
+    void turningAutocommitBackOnAfterACommitIsNotAStep() throws SQLException {
+        TracingDataSource traced = new TracingDataSource(h2);
+
+        // What a transaction manager does around each unit of work.
+        try (Connection connection = traced.getConnection(); Statement statement = connection.createStatement()) {
+            connection.setAutoCommit(false);
+            statement.executeUpdate("INSERT INTO item VALUES (1)");
+            connection.commit();
+            connection.setAutoCommit(true);
+            statement.executeUpdate("INSERT INTO item VALUES (2)");
+        }
+
+        assertThat(summary(traced.trace())).isEqualTo("""
+                t1 INSERT INTO item VALUES (1)
+                t1 COMMIT
+                t2 INSERT INTO item VALUES (2)
+                """);
+    }
+
+    @Test
     void rollingBackToASavepointIsNotAStep() throws SQLException {
         TracingDataSource traced = new TracingDataSource(h2);
 
