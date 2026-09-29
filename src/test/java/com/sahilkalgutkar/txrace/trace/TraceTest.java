@@ -55,6 +55,8 @@ class TraceTest {
         trace.end(trace.begin(Step.statement(1, 2, "INSERT INTO t VALUES (1)", List.of())),
                 Outcome.failed(new SQLException("duplicate", "23505")));
         trace.begin(Step.rollback(2, 1));
+        trace.end(trace.begin(new Step(3, 1, Step.Kind.STATEMENT, "DELETE FROM t", List.of(), true)),
+                new Outcome.Updated(0));
 
         assertThat(trace.render()).isEqualTo("""
                   1  c1 t1  SELECT v FROM t WHERE id = ?  [7]  -> rows
@@ -63,6 +65,7 @@ class TraceTest {
                   4  c1 t1  COMMIT  -> done
                   5  c1 t2  INSERT INTO t VALUES (1)  -> failed 23505
                   6  c2 t1  ROLLBACK  -> running
+                  7  c3 t1  DELETE FROM t  -> updated 0
                 """);
         assertThat(trace).hasToString(trace.render());
     }

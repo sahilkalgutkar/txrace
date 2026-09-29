@@ -50,7 +50,7 @@ public final class Trace {
         for (Event event : events()) {
             Step step = event.step();
             out.append(String.format("%3d  c%d t%d  ", event.seq(), step.connection(), step.transaction()));
-            out.append(step.endsTransaction() ? step.kind().name() : step.sql());
+            out.append(step.sql() == null ? step.kind().name() : step.sql());
             if (!step.parameters().isEmpty()) {
                 out.append("  ").append(format(step.parameters()));
             }

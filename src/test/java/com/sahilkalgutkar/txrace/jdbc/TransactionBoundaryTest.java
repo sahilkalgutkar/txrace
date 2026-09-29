@@ -10,6 +10,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,7 +43,7 @@ class TransactionBoundaryTest {
         for (Trace.Event event : trace.events()) {
             Step step = event.step();
             out.append('t').append(step.transaction()).append(' ')
-                    .append(step.endsTransaction() ? step.kind() : step.sql()).append('\n');
+                    .append(step.sql() == null ? step.kind() : step.sql()).append('\n');
         }
         return out.toString();
     }
@@ -86,6 +88,27 @@ class TransactionBoundaryTest {
         }
 
         assertThat(traced.trace().events()).extracting(e -> e.step().transaction()).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void theGateCanTellWhichStepsEndATransaction() throws SQLException {
+        List<String> seen = new ArrayList<>();
+        TracingDataSource traced = new TracingDataSource(h2, new Gate() {
+            @Override
+            public void after(Step step, Outcome outcome) {
+                seen.add((step.endsTransaction() ? "ends " : "") + (step.sql() == null ? step.kind() : step.sql()));
+            }
+        });
+
+        try (Connection connection = traced.getConnection(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO item VALUES (1)");
+            connection.setAutoCommit(false);
+            statement.executeUpdate("INSERT INTO item VALUES (2)");
+            connection.commit();
+        }
+
+        assertThat(seen).containsExactly(
+                "ends INSERT INTO item VALUES (1)", "INSERT INTO item VALUES (2)", "ends COMMIT");
     }
 
     @Test

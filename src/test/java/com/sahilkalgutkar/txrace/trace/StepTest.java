@@ -36,6 +36,14 @@ class StepTest {
     }
 
     @Test
+    void anAutocommitStatementEndsItsOwnTransaction() {
+        Step step = new Step(1, 4, Step.Kind.STATEMENT, "DELETE FROM t", List.of(), true);
+
+        assertThat(step.endsTransaction()).isTrue();
+        assertThat(Step.statement(1, 4, "DELETE FROM t", List.of()).autoCommit()).isFalse();
+    }
+
+    @Test
     void statementsNeedSqlAndBoundariesRefuseIt() {
         assertThatThrownBy(() -> Step.statement(1, 1, null, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)

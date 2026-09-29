@@ -121,7 +121,7 @@ final class ConnectionHandler extends ProxyHandler {
     }
 
     Step next(Step.Kind kind, String sql, List<Object> parameters) {
-        return new Step(id, transaction, kind, sql, parameters);
+        return new Step(id, transaction, kind, sql, parameters, autoCommit);
     }
 
     /** Sends one step through the gate to the driver, recording it on the way. */
@@ -143,8 +143,7 @@ final class ConnectionHandler extends ProxyHandler {
 
     private void finish(Step step, int seq, Outcome outcome) {
         trace.end(seq, outcome);
-        // With autocommit on, every statement is a transaction of its own, failed or not.
-        if (step.endsTransaction() || autoCommit) {
+        if (step.endsTransaction()) {
             transaction++;
             open = false;
         } else {
