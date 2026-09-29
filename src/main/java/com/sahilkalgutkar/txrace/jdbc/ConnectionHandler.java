@@ -129,13 +129,19 @@ final class ConnectionHandler extends ProxyHandler {
         gate.before(step);
         int seq = trace.begin(step);
         Object result;
-        Outcome outcome;
         try {
             result = call.call();
-            outcome = describe.of(result);
         } catch (Throwable t) {
             finish(step, seq, Outcome.failed(t));
             throw t;
+        }
+        Outcome outcome;
+        try {
+            outcome = describe.of(result);
+        } catch (SQLException e) {
+            // The statement ran. Only the follow-up question about it failed, and that must not
+            // reach the caller as if the statement had.
+            outcome = new Outcome.Done();
         }
         finish(step, seq, outcome);
         return result;

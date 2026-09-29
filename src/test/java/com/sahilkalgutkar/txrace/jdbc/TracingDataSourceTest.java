@@ -72,6 +72,19 @@ class TracingDataSourceTest {
     }
 
     @Test
+    void aStatementThatRanIsNeverReportedAsFailing(DataSource h2) throws SQLException {
+        TracingDataSource traced = new TracingDataSource(h2);
+
+        // SHUTDOWN succeeds, but asking for its update count afterwards fails because the
+        // database is gone. The caller should see what the driver itself returned.
+        try (Connection connection = traced.getConnection(); Statement statement = connection.createStatement()) {
+            assertThat(statement.execute("SHUTDOWN")).isFalse();
+        }
+
+        assertThat(outcomes(traced.trace())).containsExactly(new Outcome.Done());
+    }
+
+    @Test
     void recordsBoundParametersInPlaceholderOrder(DataSource h2) throws SQLException {
         createAccounts(h2);
         TracingDataSource traced = new TracingDataSource(h2);
