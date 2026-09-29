@@ -11,7 +11,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 
-/** Hands out traced statements and sends every step through the gate. */
+/**
+ * Hands out traced statements, sends every step through the gate, and keeps count of the
+ * transactions on its connection.
+ */
 final class ConnectionHandler extends ProxyHandler {
 
     interface Call {
@@ -27,16 +30,18 @@ final class ConnectionHandler extends ProxyHandler {
     private final Trace trace;
     private final Connection proxy;
     private int transaction = 1;
+    private boolean autoCommit;
 
-    private ConnectionHandler(Connection real, int id, Gate gate, Trace trace) {
+    private ConnectionHandler(Connection real, int id, Gate gate, Trace trace) throws SQLException {
         super(real);
         this.id = id;
         this.gate = gate;
         this.trace = trace;
+        this.autoCommit = real.getAutoCommit();
         this.proxy = create(Connection.class, this);
     }
 
-    static Connection wrap(Connection real, int id, Gate gate, Trace trace) {
+    static Connection wrap(Connection real, int id, Gate gate, Trace trace) throws SQLException {
         return new ConnectionHandler(real, id, gate, trace).proxy;
     }
 
@@ -46,6 +51,22 @@ final class ConnectionHandler extends ProxyHandler {
 
     @Override
     Object handle(Method method, Object[] args) throws Throwable {
+        switch (method.getName()) {
+            case "commit" -> {
+                return end(Step.Kind.COMMIT, method, args);
+            }
+            case "rollback" -> {
+                // rollback(Savepoint) undoes part of the transaction without ending it.
+                if (args == null) {
+                    return end(Step.Kind.ROLLBACK, method, args);
+                }
+            }
+            case "setAutoCommit" -> {
+                return setAutoCommit(method, args);
+            }
+            default -> {
+            }
+        }
         Object result = pass(method, args);
         Class<?> type = method.getReturnType();
         if (type == Statement.class || type == PreparedStatement.class || type == CallableStatement.class) {
@@ -58,6 +79,22 @@ final class ConnectionHandler extends ProxyHandler {
     @Override
     String describe() {
         return "txrace connection " + id + " over " + real;
+    }
+
+    private Object end(Step.Kind kind, Method method, Object[] args) throws Throwable {
+        return run(next(kind, null, List.of()), () -> pass(method, args), result -> new Outcome.Done());
+    }
+
+    private Object setAutoCommit(Method method, Object[] args) throws Throwable {
+        boolean on = (Boolean) args[0];
+        if (on && !autoCommit) {
+            // Turning autocommit on in the middle of a transaction commits it.
+            end(Step.Kind.COMMIT, method, args);
+        } else {
+            pass(method, args);
+        }
+        autoCommit = on;
+        return null;
     }
 
     Step next(Step.Kind kind, String sql, List<Object> parameters) {
@@ -83,6 +120,10 @@ final class ConnectionHandler extends ProxyHandler {
 
     private void finish(Step step, int seq, Outcome outcome) {
         trace.end(seq, outcome);
+        // With autocommit on, every statement is a transaction of its own, failed or not.
+        if (step.endsTransaction() || autoCommit) {
+            transaction++;
+        }
         gate.after(step, outcome);
     }
 }

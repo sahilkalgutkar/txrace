@@ -11,8 +11,8 @@ import java.util.logging.Logger;
 import javax.sql.DataSource;
 
 /**
- * A data source whose connections send every statement through a {@link Gate} and record it in a
- * {@link Trace}.
+ * A data source whose connections send every statement, commit and rollback through a
+ * {@link Gate} and record it in a {@link Trace}.
  *
  * <p>Code that unwraps a connection to its driver class and uses that directly is not traced.
  */
@@ -46,7 +46,7 @@ public final class TracingDataSource implements DataSource {
         return wrap(delegate.getConnection(user, password));
     }
 
-    private Connection wrap(Connection real) {
+    private Connection wrap(Connection real) throws SQLException {
         return ConnectionHandler.wrap(real, opened.incrementAndGet(), gate, trace);
     }
 
