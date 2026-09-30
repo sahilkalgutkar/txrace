@@ -62,6 +62,9 @@ a failed batch keeps its per-row counts. These are still open:
 - Errors in SQLState class 40. H2 rolls the whole transaction back and starts
   a new one, while PostgreSQL keeps it open and aborted until you roll back.
   I want real PostgreSQL in the tests before choosing how to count these.
+- With pgjdbc and a fetch size set, `ResultSet.next()` fetches more rows from
+  the server outside any step, and `SELECT ... FOR UPDATE` takes its row locks
+  as those rows arrive. That needs PostgreSQL in the tests too.
 - `CallableStatement` parameters: named ones are not recorded, and OUT
   parameters shift the positions of the rest.
 - Savepoints, and connections unwrapped to their driver class.
