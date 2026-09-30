@@ -72,7 +72,8 @@ public final class Trace {
             case Outcome.Updated u -> "updated " + u.count();
             case Outcome.Batch b -> "batch " + b.counts();
             case Outcome.Done d -> "done";
-            case Outcome.Failed f -> "failed " + (f.sqlState() == null ? f.message() : f.sqlState());
+            case Outcome.Failed f -> "failed " + (f.sqlState() == null ? f.message() : f.sqlState())
+                    + (f.counts().isEmpty() ? "" : " after " + f.counts());
         };
     }
 

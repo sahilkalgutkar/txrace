@@ -95,8 +95,12 @@ class BatchTest {
         }
 
         List<Trace.Event> events = traced.trace().events();
-        assertThat(events.get(0).outcome()).isInstanceOfSatisfying(Outcome.Failed.class,
-                failed -> assertThat(failed.sqlState()).isEqualTo("23505"));
+        assertThat(events.get(0).outcome()).isInstanceOfSatisfying(Outcome.Failed.class, failed -> {
+            assertThat(failed.sqlState()).isEqualTo("23505");
+            // The first row went in. -3 is Statement.EXECUTE_FAILED.
+            assertThat(failed.counts()).containsExactly(1L, -3L);
+        });
+        assertThat(traced.trace().render()).contains("-> failed 23505 after [1, -3]");
         assertThat(events.get(1).step().sql()).isEqualTo("INSERT INTO item VALUES (2, 'c')");
     }
 
