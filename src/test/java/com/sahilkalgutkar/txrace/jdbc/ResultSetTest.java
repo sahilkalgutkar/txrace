@@ -105,7 +105,7 @@ class ResultSetTest {
         assertThat(gated).containsExactly(
                 "SELECT id, balance FROM account WHERE id = 1", "ResultSet.updateRow()", "COMMIT");
         assertThat(gatedSource.trace().render()).contains(
-                "c1 t1  ResultSet.updateRow()  [balance=130]  -> updated 1");
+                "c1 t1  ResultSet.updateRow()  [balance=130]  -> done");
         assertThat(balance(1)).isEqualTo(130);
     }
 
@@ -126,8 +126,8 @@ class ResultSetTest {
         }
 
         assertThat(traced.trace().render()).contains(
-                "ResultSet.insertRow()  [1=7, 2=NULL]  -> updated 1",
-                "ResultSet.deleteRow()  -> updated 1");
+                "ResultSet.insertRow()  [1=7, 2=NULL]  -> done",
+                "ResultSet.deleteRow()  -> done");
     }
 
     @Test
@@ -210,7 +210,7 @@ class ResultSetTest {
         }
 
         assertThat(traced.trace().render()).contains(
-                "ResultSet.refreshRow()  -> rows", "ResultSet.updateRow()  -> updated 1");
+                "ResultSet.refreshRow()  -> rows", "ResultSet.updateRow()  -> done");
         assertThat(balance(1)).isEqualTo(7);
     }
 

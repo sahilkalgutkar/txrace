@@ -77,6 +77,8 @@ final class ResultSetHandler extends ProxyHandler {
         }
     }
 
+    // The driver reports no row count here. pgjdbc ignores the count its own UPDATE returns, and H2
+    // sends nothing at all for an updateRow with no pending changes, so the outcome is only Done.
     private Object change(Method method, Object[] args, List<Object> written, List<Object> pending) throws Throwable {
         ConnectionHandler connection = statement.connection();
         Step step = connection.next(Step.Kind.STATEMENT, "ResultSet." + method.getName() + "()", written);
@@ -84,7 +86,7 @@ final class ResultSetHandler extends ProxyHandler {
             Object result = pass(method, args);
             pending.clear();
             return result;
-        }, result -> new Outcome.Updated(1));
+        }, result -> new Outcome.Done());
     }
 
     @Override
