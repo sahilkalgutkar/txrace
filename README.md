@@ -52,18 +52,16 @@ gate.
 
 A review of this layer turned up places where work reaches the database
 without a step, or where a step ends up in the wrong transaction. I fixed the
-ones the scheduler depends on. These are still open:
+ones the scheduler depends on, then the ones where result sets led back out of
+the trace. Row changes made through an updatable result set are steps now, and
+a failed batch keeps its per-row counts. These are still open:
 
-- Updatable result sets (`updateRow` and friends), and anything run through
-  `ResultSet.getStatement()` or `DatabaseMetaData.getConnection()`, which hand
-  back the driver's own objects.
 - Transaction control written as SQL (`COMMIT`, `SET AUTOCOMMIT`) instead of
   through the JDBC API, DDL that commits implicitly, and H2 committing inside
   `setTransactionIsolation` when it is called part-way through a transaction.
 - Errors in SQLState class 40. H2 rolls the whole transaction back and starts
   a new one, while PostgreSQL keeps it open and aborted until you roll back.
   I want real PostgreSQL in the tests before choosing how to count these.
-- A failed batch keeps its per-row counts in the exception but not the trace.
 - `CallableStatement` parameters: named ones are not recorded, and OUT
   parameters shift the positions of the rest.
 - Savepoints, and connections unwrapped to their driver class.
