@@ -47,6 +47,16 @@ abstract class ProxyHandler implements InvocationHandler {
 
     abstract String describe();
 
+    /** Copies values a caller might reuse, so the trace keeps what was actually sent. */
+    static Object snapshot(Object value) {
+        return switch (value) {
+            case byte[] bytes -> bytes.clone();
+            case java.util.Date date -> date.clone();
+            case java.util.Calendar calendar -> calendar.clone();
+            case null, default -> value;
+        };
+    }
+
     /** Calls the method on the real object, rethrowing whatever it threw as itself. */
     final Object pass(Method method, Object[] args) throws Throwable {
         try {

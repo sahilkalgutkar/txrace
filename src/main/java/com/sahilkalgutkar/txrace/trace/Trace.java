@@ -3,6 +3,7 @@ package com.sahilkalgutkar.txrace.trace;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -81,6 +82,7 @@ public final class Trace {
             case String s -> "'" + s.replace("'", "''") + "'";
             case byte[] bytes -> "X'" + HexFormat.of().formatHex(bytes) + "'";
             case List<?> list -> list.stream().map(Trace::format).collect(Collectors.joining(", ", "[", "]"));
+            case Map.Entry<?, ?> column -> column.getKey() + "=" + format(column.getValue());
             default -> String.valueOf(value);
         };
     }

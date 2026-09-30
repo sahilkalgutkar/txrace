@@ -132,16 +132,6 @@ final class StatementHandler extends ProxyHandler {
         return new Outcome.Batch(Arrays.stream(counts).boxed().toList());
     }
 
-    /** Copies values a caller might reuse, so the trace keeps what was actually bound. */
-    private static Object snapshot(Object value) {
-        return switch (value) {
-            case byte[] bytes -> bytes.clone();
-            case java.util.Date date -> date.clone();
-            case java.util.Calendar calendar -> calendar.clone();
-            case null, default -> value;
-        };
-    }
-
     private static boolean setsParameter(Method method, Object[] args) {
         // Indexed setters are all declared on PreparedStatement. Statement's own setters
         // (setFetchSize and friends) and CallableStatement's named ones are left alone.
