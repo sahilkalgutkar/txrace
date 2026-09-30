@@ -34,6 +34,18 @@ class TraceTest {
     }
 
     @Test
+    void aCopyDoesNotSeeLaterSteps() {
+        Trace trace = new Trace();
+        trace.begin(Step.statement(1, 1, "SELECT 1", List.of()));
+
+        Trace copy = trace.copy();
+        trace.begin(Step.commit(1, 1));
+
+        assertThat(copy.events()).hasSize(1);
+        assertThat(trace.events()).hasSize(2);
+    }
+
+    @Test
     void filtersByConnection() {
         Trace trace = new Trace();
         trace.begin(Step.statement(1, 1, "SELECT 1", List.of()));

@@ -101,7 +101,8 @@ public final class Scheduler {
                     + String.join(", ", stuck);
         }
         if (failure != null) {
-            throw new ScheduleException(failure, traced.trace(), Arrays.asList(results));
+            // A copy, because a transaction the join gave up on may still add steps.
+            throw new ScheduleException(failure, traced.trace().copy(), Arrays.asList(results));
         }
         return new Run(schedule, traced.trace(), List.of(results));
     }
@@ -201,20 +202,28 @@ public final class Scheduler {
         return System.nanoTime() + timeoutNanos;
     }
 
+    /**
+     * Waits for the workers to finish, for up to one timeout in total. It keeps waiting through an
+     * interrupt, because returning early would leave rollbacks still running and locks still held,
+     * and sets the interrupt again before returning.
+     */
     private List<String> join(List<Thread> workers) {
-        List<String> stuck = new ArrayList<>();
+        boolean interrupted = Thread.interrupted();
         long deadline = deadline();
         for (Thread worker : workers) {
-            try {
-                worker.join(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            if (worker.isAlive()) {
-                stuck.add(worker.getName());
+            long left;
+            while (worker.isAlive() && (left = deadline - System.nanoTime()) > 0) {
+                try {
+                    worker.join(Duration.ofNanos(left));
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
             }
         }
-        return stuck;
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return workers.stream().filter(Thread::isAlive).map(Thread::getName).toList();
     }
 
     /** Why the scheduler stopped following the schedule. */

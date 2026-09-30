@@ -13,6 +13,8 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -138,6 +140,41 @@ class SchedulerFailureTest {
         // Abandoning the run lets transaction 1 roll back, which frees the lock, and then
         // transaction 2 finishes its update and rolls back too.
         assertThat(e.trace().render()).contains("c1 t1  ROLLBACK  -> done", "c2 t1  ROLLBACK  -> done");
+        assertThat(balance()).isEqualTo(100);
+    }
+
+    @Test
+    void anInterruptStillWaitsForTheRollback() throws Exception {
+        CountDownLatch updated = new CountDownLatch(1);
+        Transaction slow = connection -> {
+            Object balance = deposit(1, 30).run(connection);
+            updated.countDown();
+            Thread.sleep(300);
+            return balance;
+        };
+        Scheduler scheduler = new Scheduler(h2);
+        AtomicReference<ScheduleException> thrown = new AtomicReference<>();
+        AtomicBoolean interruptKept = new AtomicBoolean();
+
+        Thread caller = Thread.ofPlatform().start(() -> {
+            try {
+                scheduler.run(Schedule.parse("1 1 1"), slow);
+            } catch (ScheduleException e) {
+                thrown.set(e);
+            } catch (SQLException e) {
+                throw new AssertionError(e);
+            }
+            interruptKept.set(Thread.currentThread().isInterrupted());
+        });
+        updated.await();
+        caller.interrupt();
+        caller.join();
+
+        ScheduleException e = thrown.get();
+        assertThat(e).hasMessageStartingWith("interrupted while running the schedule")
+                .hasMessageNotContaining("Still running");
+        assertThat(e.trace().render()).endsWith("c1 t1  ROLLBACK  -> done\n");
+        assertThat(interruptKept).isTrue();
         assertThat(balance()).isEqualTo(100);
     }
 
