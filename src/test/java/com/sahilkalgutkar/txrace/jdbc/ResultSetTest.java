@@ -215,6 +215,21 @@ class ResultSetTest {
     }
 
     @Test
+    void theSameResultSetComesBackAsTheSameProxy() throws SQLException {
+        try (Connection connection = traced.getConnection();
+             Statement statement = connection.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_UPDATABLE)) {
+            ResultSet rows = statement.executeQuery("SELECT id, balance FROM account");
+            assertThat(statement.getResultSet()).isSameAs(rows);
+
+            rows.next();
+            rows.updateInt(2, 55);
+            statement.getResultSet().updateRow();
+        }
+
+        assertThat(traced.trace().render()).contains("ResultSet.updateRow()  [2=55]");
+    }
+
+    @Test
     void metadataLeadsBackToTheTracedConnection() throws SQLException {
         try (Connection connection = traced.getConnection()) {
             assertThat(connection.getMetaData().getConnection()).isSameAs(connection);

@@ -24,6 +24,10 @@ final class StatementHandler extends ProxyHandler {
     private final Statement proxy;
     private final String sql;
     private final SortedMap<Integer, Object> parameters = new TreeMap<>();
+    // The driver hands back the same result set on every getResultSet() call, and so should we,
+    // or pending column updates end up split across two proxies.
+    private ResultSet lastRows;
+    private ResultSet lastProxy;
     // SQL strings for a plain statement, parameter lists for a prepared one.
     private final List<Object> batch = new ArrayList<>();
 
@@ -52,7 +56,14 @@ final class StatementHandler extends ProxyHandler {
     Object handle(Method method, Object[] args) throws Throwable {
         Object result = dispatch(method, args);
         // Result sets have to point back at this proxy, or getStatement() leads out of the trace.
-        return result instanceof ResultSet rows ? ResultSetHandler.wrap(rows, this) : result;
+        if (result instanceof ResultSet rows) {
+            if (rows != lastRows) {
+                lastRows = rows;
+                lastProxy = ResultSetHandler.wrap(rows, this);
+            }
+            return lastProxy;
+        }
+        return result;
     }
 
     private Object dispatch(Method method, Object[] args) throws Throwable {
