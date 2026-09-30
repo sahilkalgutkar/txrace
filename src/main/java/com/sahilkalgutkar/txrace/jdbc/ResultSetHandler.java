@@ -32,6 +32,7 @@ final class ResultSetHandler extends ProxyHandler {
         this.statement = statement;
     }
 
+    /** {@code statement} is null for a result set that no statement of ours produced. */
     static ResultSet wrap(ResultSet real, StatementHandler statement) {
         return create(ResultSet.class, new ResultSetHandler(real, statement));
     }
@@ -39,6 +40,9 @@ final class ResultSetHandler extends ProxyHandler {
     @Override
     Object handle(Method method, Object[] args) throws Throwable {
         String name = method.getName();
+        if (statement == null) {
+            return name.equals("getStatement") ? null : pass(method, args);
+        }
         switch (name) {
             case "getStatement" -> {
                 return statement.proxy();

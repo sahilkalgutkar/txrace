@@ -233,6 +233,11 @@ class ResultSetTest {
     void metadataLeadsBackToTheTracedConnection() throws SQLException {
         try (Connection connection = traced.getConnection()) {
             assertThat(connection.getMetaData().getConnection()).isSameAs(connection);
+            try (ResultSet tables = connection.getMetaData().getTables(null, null, "ACCOUNT", null)) {
+                assertThat(tables.toString()).startsWith("txrace result set over ");
+                assertThat(tables.getStatement()).isNull();
+                assertThat(tables.next()).isTrue();
+            }
             assertThat(connection.getMetaData().getDatabaseProductName()).isEqualTo("H2");
             assertThat(connection.getMetaData().toString()).startsWith("txrace metadata over ");
             assertThat(connection.createStatement().executeQuery("SELECT 1").toString())

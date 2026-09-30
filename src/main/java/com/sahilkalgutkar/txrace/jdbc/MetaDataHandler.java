@@ -2,8 +2,12 @@ package com.sahilkalgutkar.txrace.jdbc;
 
 import java.lang.reflect.Method;
 import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
 
-/** Keeps {@code getMetaData().getConnection()} pointing at the traced connection. */
+/**
+ * Keeps {@code getMetaData().getConnection()} pointing at the traced connection, and the result
+ * sets it returns from pointing at the driver's own statement.
+ */
 final class MetaDataHandler extends ProxyHandler {
 
     private final ConnectionHandler connection;
@@ -22,7 +26,10 @@ final class MetaDataHandler extends ProxyHandler {
         if (method.getName().equals("getConnection")) {
             return connection.proxy();
         }
-        return pass(method, args);
+        Object result = pass(method, args);
+        // JDBC lets a metadata result set answer null from getStatement(). pgjdbc answers with the
+        // raw statement it used, which would be a way out of the trace.
+        return result instanceof ResultSet rows ? ResultSetHandler.wrap(rows, null) : result;
     }
 
     @Override
