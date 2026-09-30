@@ -11,6 +11,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.CountDownLatch;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +38,35 @@ class SchedulerFailureTest {
             rows.next();
             return rows.getInt(1);
         }
+    }
+
+    private int sessions() throws SQLException {
+        try (Connection connection = h2.getConnection();
+             ResultSet rows = connection.createStatement().executeQuery(
+                     "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SESSIONS")) {
+            rows.next();
+            return rows.getInt(1) - 1;
+        }
+    }
+
+    @Test
+    void checksItsArgumentsBeforeOpeningAnything() throws SQLException {
+        Scheduler scheduler = new Scheduler(h2);
+
+        assertThatThrownBy(() -> scheduler.run(null, deposit(1, 30))).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> scheduler.run(Schedule.parse("1"), deposit(1, 30), null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new Scheduler(h2, Duration.ZERO)).hasMessageContaining("has to be positive");
+        assertThat(sessions()).isZero();
+    }
+
+    @Test
+    void acceptsATimeoutTooLongToCountInNanoseconds() throws SQLException {
+        Scheduler scheduler = new Scheduler(h2, ChronoUnit.FOREVER.getDuration());
+
+        Run run = scheduler.run(Schedule.parse("1 1 1"), deposit(1, 30));
+
+        assertThat(run.result(1)).isEqualTo(new Result.Committed(130));
     }
 
     @Test

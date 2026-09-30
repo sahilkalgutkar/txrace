@@ -24,6 +24,7 @@ public final class Scheduler {
 
     private final DataSource dataSource;
     private final Duration timeout;
+    private final long timeoutNanos;
 
     public Scheduler(DataSource dataSource) {
         this(dataSource, Duration.ofSeconds(5));
@@ -39,6 +40,12 @@ public final class Scheduler {
     public Scheduler(DataSource dataSource, Duration timeout) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.timeout = Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("the timeout has to be positive, got " + timeout);
+        }
+        // A timeout too long to count in nanoseconds means no timeout, not an overflow later on.
+        this.timeoutNanos = timeout.compareTo(Duration.ofNanos(Long.MAX_VALUE)) >= 0
+                ? Long.MAX_VALUE : timeout.toNanos();
     }
 
     public Run run(Schedule schedule, Transaction... transactions) throws SQLException {
@@ -46,6 +53,9 @@ public final class Scheduler {
     }
 
     public Run run(Schedule schedule, List<Transaction> transactions) throws SQLException {
+        // Checked before anything is opened or started, so a bad argument leaves nothing behind.
+        Objects.requireNonNull(schedule, "schedule");
+        transactions.forEach(transaction -> Objects.requireNonNull(transaction, "transaction"));
         Turnstile turnstile = new Turnstile();
         TracingDataSource traced = new TracingDataSource(dataSource, turnstile);
         int count = transactions.size();
@@ -58,25 +68,33 @@ public final class Scheduler {
             Transaction transaction = transactions.get(i);
             Connection connection = connections.get(i);
             workers.add(Thread.ofPlatform().name("txrace-t" + n).daemon().start(() -> {
-                results[n - 1] = runOne(transaction, connection);
-                turnstile.finished(n);
+                try {
+                    results[n - 1] = runOne(transaction, connection);
+                } finally {
+                    turnstile.finished(n);
+                }
             }));
         }
 
-        String failure;
+        String failure = null;
+        RuntimeException unexpected = null;
         try {
             follow(schedule, count, turnstile);
-            failure = null;
         } catch (Stop stop) {
             failure = stop.getMessage();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             failure = "interrupted while running the schedule";
+        } catch (RuntimeException e) {
+            unexpected = e;
         }
-        if (failure != null) {
+        if (failure != null || unexpected != null) {
             turnstile.abort();
         }
         List<String> stuck = join(workers);
+        if (unexpected != null) {
+            throw unexpected;
+        }
         if (!stuck.isEmpty()) {
             failure = (failure == null ? "" : failure + ". ") + "Still running after the schedule was abandoned: "
                     + String.join(", ", stuck);
@@ -109,26 +127,25 @@ public final class Scheduler {
     }
 
     private static Result runOne(Transaction transaction, Connection connection) {
-        Result result;
         try {
             Object value = transaction.run(connection);
             connection.commit();
-            result = new Result.Committed(value);
+            return new Result.Committed(value);
         } catch (Throwable e) {
             try {
                 connection.rollback();
-            } catch (SQLException suppressed) {
+            } catch (Throwable suppressed) {
                 e.addSuppressed(suppressed);
             }
-            result = new Result.RolledBack(e);
+            return new Result.RolledBack(e);
+        } finally {
+            try {
+                // Nothing is pending by now, so closing sends no step.
+                connection.close();
+            } catch (SQLException | RuntimeException ignored) {
+                // The outcome is already decided; a failed close changes nothing about it.
+            }
         }
-        try {
-            // Nothing is pending by now, so closing sends no step.
-            connection.close();
-        } catch (SQLException ignored) {
-            // The outcome is already decided; a failed close changes nothing about it.
-        }
-        return result;
     }
 
     private void follow(Schedule schedule, int count, Turnstile turnstile) throws Stop, InterruptedException {
@@ -167,7 +184,9 @@ public final class Scheduler {
     }
 
     private long deadline() {
-        return System.nanoTime() + timeout.toNanos();
+        // Overflows for a very long timeout, which is fine: deadlines are only ever compared by
+        // subtracting nanoTime, and that wraps back round.
+        return System.nanoTime() + timeoutNanos;
     }
 
     private List<String> join(List<Thread> workers) {
