@@ -148,6 +148,50 @@ class ResultSetTest {
     }
 
     @Test
+    void updatesStayPendingWhenTheCursorMoves() throws SQLException {
+        try (Connection connection = h2.getConnection()) {
+            connection.createStatement().execute("INSERT INTO account (balance) VALUES (100)");
+        }
+
+        try (Connection connection = traced.getConnection();
+             Statement statement = connection.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_UPDATABLE)) {
+            try (ResultSet rows = statement.executeQuery("SELECT id, balance FROM account ORDER BY id")) {
+                rows.next();
+                rows.updateInt(2, 50);
+                rows.next();
+                rows.updateRow();
+            }
+        }
+
+        // The driver writes the update on the row the cursor reached, so the step has to carry it.
+        assertThat(traced.trace().render()).contains("ResultSet.updateRow()  [2=50]");
+        assertThat(balance(1)).isEqualTo(100);
+        assertThat(balance(2)).isEqualTo(50);
+    }
+
+    @Test
+    void theInsertRowKeepsItsOwnUpdates() throws SQLException {
+        try (Connection connection = traced.getConnection();
+             Statement statement = connection.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_UPDATABLE)) {
+            try (ResultSet rows = statement.executeQuery("SELECT id, balance FROM account")) {
+                rows.next();
+                rows.updateInt(2, 50);
+                rows.moveToInsertRow();
+                rows.updateInt(1, 3);
+                rows.updateInt(2, 7);
+                rows.insertRow();
+                rows.moveToCurrentRow();
+                rows.updateRow();
+            }
+        }
+
+        assertThat(traced.trace().render()).contains(
+                "ResultSet.insertRow()  [1=3, 2=7]", "ResultSet.updateRow()  [2=50]");
+        assertThat(balance(1)).isEqualTo(50);
+        assertThat(balance(3)).isEqualTo(7);
+    }
+
+    @Test
     void metadataLeadsBackToTheTracedConnection() throws SQLException {
         try (Connection connection = traced.getConnection()) {
             assertThat(connection.getMetaData().getConnection()).isSameAs(connection);
