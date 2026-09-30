@@ -192,6 +192,29 @@ class ResultSetTest {
     }
 
     @Test
+    void refreshingARowReadsTheDatabaseAsAStep() throws SQLException {
+        try (Connection connection = traced.getConnection();
+             Statement statement = connection.createStatement(ResultSet.TYPE_SCROLL_SENSITIVE, ResultSet.CONCUR_UPDATABLE)) {
+            connection.setAutoCommit(false);
+            try (ResultSet rows = statement.executeQuery("SELECT id, balance FROM account")) {
+                rows.next();
+                rows.updateInt(2, 50);
+                try (Connection other = h2.getConnection()) {
+                    other.createStatement().executeUpdate("UPDATE account SET balance = 7");
+                }
+                rows.refreshRow();
+                assertThat(rows.getInt(2)).isEqualTo(7);
+                rows.updateRow();
+            }
+            connection.commit();
+        }
+
+        assertThat(traced.trace().render()).contains(
+                "ResultSet.refreshRow()  -> rows", "ResultSet.updateRow()  -> updated 1");
+        assertThat(balance(1)).isEqualTo(7);
+    }
+
+    @Test
     void metadataLeadsBackToTheTracedConnection() throws SQLException {
         try (Connection connection = traced.getConnection()) {
             assertThat(connection.getMetaData().getConnection()).isSameAs(connection);

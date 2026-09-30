@@ -49,6 +49,17 @@ final class ResultSetHandler extends ProxyHandler {
             case "insertRow" -> {
                 return change(method, args, insertChanges, insertChanges);
             }
+            case "refreshRow" -> {
+                // A read of the current row from the database, so it waits its turn like any query.
+                // The spec says pending updates are lost, and H2 does drop them.
+                ConnectionHandler connection = statement.connection();
+                Step step = connection.next(Step.Kind.STATEMENT, "ResultSet.refreshRow()", List.of());
+                return connection.run(step, () -> {
+                    Object result = pass(method, args);
+                    rowChanges.clear();
+                    return result;
+                }, result -> new Outcome.Rows());
+            }
             default -> {
                 Object result = pass(method, args);
                 if (name.equals("moveToInsertRow")) {
