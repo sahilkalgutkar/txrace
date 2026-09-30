@@ -4,6 +4,7 @@ import com.sahilkalgutkar.txrace.trace.Outcome;
 import com.sahilkalgutkar.txrace.trace.Step;
 import java.lang.reflect.Method;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -20,24 +21,41 @@ import java.util.stream.Collectors;
 final class StatementHandler extends ProxyHandler {
 
     private final ConnectionHandler connection;
+    private final Statement proxy;
     private final String sql;
     private final SortedMap<Integer, Object> parameters = new TreeMap<>();
     // SQL strings for a plain statement, parameter lists for a prepared one.
     private final List<Object> batch = new ArrayList<>();
 
-    private StatementHandler(Statement real, ConnectionHandler connection, String sql) {
+    private <T extends Statement> StatementHandler(Class<T> type, Statement real, ConnectionHandler connection,
+            String sql) {
         super(real);
         this.connection = connection;
         this.sql = sql;
+        this.proxy = create(type, this);
     }
 
     /** {@code sql} is the prepared SQL, or null for a plain statement. */
     static <T extends Statement> T wrap(Class<T> type, Statement real, ConnectionHandler connection, String sql) {
-        return create(type, new StatementHandler(real, connection, sql));
+        return type.cast(new StatementHandler(type, real, connection, sql).proxy);
+    }
+
+    Statement proxy() {
+        return proxy;
+    }
+
+    ConnectionHandler connection() {
+        return connection;
     }
 
     @Override
     Object handle(Method method, Object[] args) throws Throwable {
+        Object result = dispatch(method, args);
+        // Result sets have to point back at this proxy, or getStatement() leads out of the trace.
+        return result instanceof ResultSet rows ? ResultSetHandler.wrap(rows, this) : result;
+    }
+
+    private Object dispatch(Method method, Object[] args) throws Throwable {
         String name = method.getName();
         switch (name) {
             case "execute", "executeQuery", "executeUpdate", "executeLargeUpdate" -> {

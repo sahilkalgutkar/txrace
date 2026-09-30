@@ -6,6 +6,7 @@ import com.sahilkalgutkar.txrace.trace.Trace;
 import java.lang.reflect.Method;
 import java.sql.CallableStatement;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -78,6 +79,9 @@ final class ConnectionHandler extends ProxyHandler {
         if (type == Statement.class || type == PreparedStatement.class || type == CallableStatement.class) {
             String sql = type == Statement.class ? null : (String) args[0];
             return StatementHandler.wrap(type.asSubclass(Statement.class), (Statement) result, this, sql);
+        }
+        if (result instanceof DatabaseMetaData metaData) {
+            return MetaDataHandler.wrap(metaData, this);
         }
         return result;
     }
