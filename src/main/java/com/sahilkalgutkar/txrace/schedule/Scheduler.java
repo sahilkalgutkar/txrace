@@ -7,6 +7,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeoutException;
@@ -79,7 +80,7 @@ public final class Scheduler {
         String failure = null;
         RuntimeException unexpected = null;
         try {
-            follow(schedule, count, turnstile);
+            follow(schedule, count, turnstile, results);
         } catch (Stop stop) {
             failure = stop.getMessage();
         } catch (InterruptedException e) {
@@ -100,7 +101,7 @@ public final class Scheduler {
                     + String.join(", ", stuck);
         }
         if (failure != null) {
-            throw new ScheduleException(failure, traced.trace());
+            throw new ScheduleException(failure, traced.trace(), Arrays.asList(results));
         }
         return new Run(schedule, traced.trace(), List.of(results));
     }
@@ -148,7 +149,8 @@ public final class Scheduler {
         }
     }
 
-    private void follow(Schedule schedule, int count, Turnstile turnstile) throws Stop, InterruptedException {
+    private void follow(Schedule schedule, int count, Turnstile turnstile, Result[] results)
+            throws Stop, InterruptedException {
         for (int i = 0; i < schedule.size(); i++) {
             int n = schedule.order().get(i);
             String at = "position " + (i + 1) + " of \"" + schedule + "\"";
@@ -156,7 +158,10 @@ public final class Scheduler {
                 throw new Stop(at + " names transaction " + n + ", but there are only " + count);
             }
             if (await(turnstile, n, at) == null) {
-                throw new Stop(at + " asks for transaction " + n + ", which has already finished");
+                // A worker stores its result before it reports finishing, and both go through the
+                // turnstile's lock, so the result is visible here.
+                throw new Stop(at + " asks for transaction " + n + ", which has already finished: "
+                        + ended(results[n - 1]));
             }
             try {
                 turnstile.release(n, deadline());
@@ -172,6 +177,13 @@ public final class Scheduler {
                         + (next.sql() == null ? next.kind() : next.sql()));
             }
         }
+    }
+
+    private static String ended(Result result) {
+        return switch (result) {
+            case Result.Committed committed -> "it committed";
+            case Result.RolledBack rolledBack -> "it rolled back after " + rolledBack.cause();
+        };
     }
 
     private Step await(Turnstile turnstile, int n, String at) throws Stop, InterruptedException {

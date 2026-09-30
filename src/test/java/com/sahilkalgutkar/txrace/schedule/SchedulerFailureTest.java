@@ -87,8 +87,26 @@ class SchedulerFailureTest {
 
         assertThatThrownBy(() -> scheduler.run(Schedule.parse("1 1 1 1"), deposit(1, 30)))
                 .isInstanceOf(ScheduleException.class)
-                .hasMessageStartingWith("position 4 of \"1 1 1 1\" asks for transaction 1, which has already finished");
+                .hasMessageStartingWith("position 4 of \"1 1 1 1\" asks for transaction 1, which has already finished: "
+                        + "it committed");
         assertThat(balance()).isEqualTo(130);
+    }
+
+    @Test
+    void saysWhyATransactionFinishedEarly() {
+        Transaction refusal = connection -> {
+            deposit(1, 0).run(connection);
+            throw new IllegalStateException("insufficient funds");
+        };
+        Scheduler scheduler = new Scheduler(h2);
+
+        ScheduleException e = catchThrowableOfType(ScheduleException.class,
+                () -> scheduler.run(Schedule.parse("1 1 1 1"), refusal));
+
+        assertThat(e).hasMessageStartingWith("position 4 of \"1 1 1 1\" asks for transaction 1, which has already "
+                + "finished: it rolled back after java.lang.IllegalStateException: insufficient funds");
+        assertThat(e.getSuppressed()).singleElement().hasFieldOrPropertyWithValue("message", "insufficient funds");
+        assertThat(e.results()).singleElement().isInstanceOf(Result.RolledBack.class);
     }
 
     @Test
