@@ -37,6 +37,13 @@ public final class Trace {
         events.set(seq - 1, new Event(seq, event.step(), outcome));
     }
 
+    /** A copy that later steps will not change. */
+    public synchronized Trace copy() {
+        Trace copy = new Trace();
+        copy.events.addAll(events);
+        return copy;
+    }
+
     public synchronized List<Event> events() {
         return List.copyOf(events);
     }

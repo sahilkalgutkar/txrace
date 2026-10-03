@@ -14,7 +14,7 @@ import org.junit.jupiter.api.extension.ParameterResolver;
  * Gives each test that asks for a {@link DataSource} its own in-memory H2 database, and shuts it
  * down afterwards.
  */
-final class H2Extension implements ParameterResolver, AfterEachCallback {
+public final class H2Extension implements ParameterResolver, AfterEachCallback {
 
     private static final AtomicInteger NEXT = new AtomicInteger();
     private static final ExtensionContext.Namespace NAMESPACE = ExtensionContext.Namespace.create(H2Extension.class);

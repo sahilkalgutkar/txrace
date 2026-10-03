@@ -48,6 +48,37 @@ own. H2, PostgreSQL and connection pools all roll back at close anyway, and
 doing it explicitly puts the rollback, and the locks it releases, through the
 gate.
 
+## Running a schedule
+
+`Scheduler` runs each transaction on its own thread and connection, and holds
+every step at the gate until the schedule says it is that transaction's turn.
+The schedule is a list of transaction numbers, one per step, commit included:
+
+```java
+Scheduler scheduler = new Scheduler(dataSource);
+Run run = scheduler.run(Schedule.parse("1 2 1 1 2 2"), deposit(1, 30), deposit(1, 50));
+```
+
+Each `deposit` reads the balance and writes back the balance plus its amount,
+and the scheduler commits it once it returns. That schedule is the lost update
+from above, now happening across two real threads, and it ends at 150 every
+time. `1 1 1 2 2 2` ends at 180.
+
+A transaction needs its own thread because JDBC calls block: there is no way
+to pause one halfway through a call on a shared thread, so it has to be held
+back before the call. I open the connections in order on the calling thread,
+so connection n in the trace is always transaction n.
+
+The scheduler is strict. A schedule that names a transaction that has already
+finished, or runs out while one still has a step to take, is an error rather
+than something to guess at, because a schedule that replays exactly is the
+whole point. Running every one of the 560 orders of three independent
+transactions puts each step exactly where its schedule said.
+
+One thing it cannot do yet is tell when a released step is waiting on a lock
+held by a transaction that is still parked. For now that step is reported
+once a timeout runs out, or H2's own lock timeout fails it first.
+
 ### Known gaps
 
 A review of this layer turned up places where work reaches the database
@@ -72,7 +103,7 @@ a failed batch keeps its per-row counts. These are still open:
 ## Status
 
 - [x] JDBC proxy, gate and trace
-- [ ] A scheduler that replays a given order of steps exactly
+- [x] A scheduler that replays a given order of steps exactly
 - [ ] Noticing a statement that is waiting on another transaction's lock (Postgres and H2)
 - [ ] Exploring orders, with a bound on preemptions
 - [ ] Comparing each order against every serial order, and printing the shortest failing one
