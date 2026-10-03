@@ -4,6 +4,7 @@ import com.sahilkalgutkar.txrace.trace.Outcome;
 import com.sahilkalgutkar.txrace.trace.Step;
 import java.lang.reflect.Method;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -20,24 +21,52 @@ import java.util.stream.Collectors;
 final class StatementHandler extends ProxyHandler {
 
     private final ConnectionHandler connection;
+    private final Statement proxy;
     private final String sql;
     private final SortedMap<Integer, Object> parameters = new TreeMap<>();
+    // The driver hands back the same result set on every getResultSet() call, and so should we,
+    // or pending column updates end up split across two proxies.
+    private ResultSet lastRows;
+    private ResultSet lastProxy;
     // SQL strings for a plain statement, parameter lists for a prepared one.
     private final List<Object> batch = new ArrayList<>();
 
-    private StatementHandler(Statement real, ConnectionHandler connection, String sql) {
+    private <T extends Statement> StatementHandler(Class<T> type, Statement real, ConnectionHandler connection,
+            String sql) {
         super(real);
         this.connection = connection;
         this.sql = sql;
+        this.proxy = create(type, this);
     }
 
     /** {@code sql} is the prepared SQL, or null for a plain statement. */
     static <T extends Statement> T wrap(Class<T> type, Statement real, ConnectionHandler connection, String sql) {
-        return create(type, new StatementHandler(real, connection, sql));
+        return type.cast(new StatementHandler(type, real, connection, sql).proxy);
+    }
+
+    Statement proxy() {
+        return proxy;
+    }
+
+    ConnectionHandler connection() {
+        return connection;
     }
 
     @Override
     Object handle(Method method, Object[] args) throws Throwable {
+        Object result = dispatch(method, args);
+        // Result sets have to point back at this proxy, or getStatement() leads out of the trace.
+        if (result instanceof ResultSet rows) {
+            if (rows != lastRows) {
+                lastRows = rows;
+                lastProxy = ResultSetHandler.wrap(rows, this);
+            }
+            return lastProxy;
+        }
+        return result;
+    }
+
+    private Object dispatch(Method method, Object[] args) throws Throwable {
         String name = method.getName();
         switch (name) {
             case "execute", "executeQuery", "executeUpdate", "executeLargeUpdate" -> {
@@ -112,16 +141,6 @@ final class StatementHandler extends ProxyHandler {
     private static Outcome batchOutcome(Object result) {
         long[] counts = result instanceof int[] ints ? Arrays.stream(ints).asLongStream().toArray() : (long[]) result;
         return new Outcome.Batch(Arrays.stream(counts).boxed().toList());
-    }
-
-    /** Copies values a caller might reuse, so the trace keeps what was actually bound. */
-    private static Object snapshot(Object value) {
-        return switch (value) {
-            case byte[] bytes -> bytes.clone();
-            case java.util.Date date -> date.clone();
-            case java.util.Calendar calendar -> calendar.clone();
-            case null, default -> value;
-        };
     }
 
     private static boolean setsParameter(Method method, Object[] args) {

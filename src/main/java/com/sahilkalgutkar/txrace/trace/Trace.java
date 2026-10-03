@@ -3,6 +3,7 @@ package com.sahilkalgutkar.txrace.trace;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -71,7 +72,8 @@ public final class Trace {
             case Outcome.Updated u -> "updated " + u.count();
             case Outcome.Batch b -> "batch " + b.counts();
             case Outcome.Done d -> "done";
-            case Outcome.Failed f -> "failed " + (f.sqlState() == null ? f.message() : f.sqlState());
+            case Outcome.Failed f -> "failed " + (f.sqlState() == null ? f.message() : f.sqlState())
+                    + (f.counts().isEmpty() ? "" : " after " + f.counts());
         };
     }
 
@@ -81,6 +83,7 @@ public final class Trace {
             case String s -> "'" + s.replace("'", "''") + "'";
             case byte[] bytes -> "X'" + HexFormat.of().formatHex(bytes) + "'";
             case List<?> list -> list.stream().map(Trace::format).collect(Collectors.joining(", ", "[", "]"));
+            case Map.Entry<?, ?> column -> column.getKey() + "=" + format(column.getValue());
             default -> String.valueOf(value);
         };
     }
