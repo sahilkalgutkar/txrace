@@ -59,9 +59,16 @@ public final class Scheduler {
         transactions.forEach(transaction -> Objects.requireNonNull(transaction, "transaction"));
         Turnstile turnstile = new Turnstile();
         TracingDataSource traced = new TracingDataSource(dataSource, turnstile);
+        try (LockWatch watch = LockWatch.open(dataSource)) {
+            return run(schedule, transactions, turnstile, traced, watch);
+        }
+    }
+
+    private Run run(Schedule schedule, List<Transaction> transactions, Turnstile turnstile, TracingDataSource traced,
+            LockWatch watch) throws SQLException {
         int count = transactions.size();
         // Opened here and in order, so that connection n in the trace is transaction n.
-        List<Connection> connections = open(traced, count);
+        List<Connection> connections = open(traced, watch, count);
         Result[] results = new Result[count];
         List<Thread> workers = new ArrayList<>();
         for (int i = 0; i < count; i++) {
@@ -72,7 +79,7 @@ public final class Scheduler {
                 try {
                     results[n - 1] = runOne(transaction, connection);
                 } finally {
-                    turnstile.finished(n);
+                    turnstile.finish(n);
                 }
             }));
         }
@@ -80,12 +87,14 @@ public final class Scheduler {
         String failure = null;
         RuntimeException unexpected = null;
         try {
-            follow(schedule, count, turnstile, results);
+            new Follower(schedule, count, turnstile, watch, traced.trace(), results, timeout, timeoutNanos).follow();
         } catch (Stop stop) {
             failure = stop.getMessage();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             failure = "interrupted while running the schedule";
+        } catch (SQLException e) {
+            failure = "could not ask the database about locks: " + e;
         } catch (RuntimeException e) {
             unexpected = e;
         }
@@ -107,12 +116,14 @@ public final class Scheduler {
         return new Run(schedule, traced.trace(), List.of(results));
     }
 
-    private static List<Connection> open(TracingDataSource traced, int count) throws SQLException {
+    private static List<Connection> open(TracingDataSource traced, LockWatch watch, int count) throws SQLException {
         List<Connection> connections = new ArrayList<>();
         try {
             for (int i = 0; i < count; i++) {
                 Connection connection = traced.getConnection();
                 connections.add(connection);
+                // Before autocommit goes off, so the question does not start a transaction.
+                watch.register(i + 1, TracingDataSource.unwrapped(connection));
                 connection.setAutoCommit(false);
             }
         } catch (SQLException e) {
@@ -150,52 +161,6 @@ public final class Scheduler {
         }
     }
 
-    private void follow(Schedule schedule, int count, Turnstile turnstile, Result[] results)
-            throws Stop, InterruptedException {
-        for (int i = 0; i < schedule.size(); i++) {
-            int n = schedule.order().get(i);
-            String at = "position " + (i + 1) + " of \"" + schedule + "\"";
-            if (n > count) {
-                throw new Stop(at + " names transaction " + n + ", but there are only " + count);
-            }
-            if (await(turnstile, n, at) == null) {
-                // A worker stores its result before it reports finishing, and both go through the
-                // turnstile's lock, so the result is visible here.
-                throw new Stop(at + " asks for transaction " + n + ", which has already finished: "
-                        + ended(results[n - 1]));
-            }
-            try {
-                turnstile.release(n, deadline());
-            } catch (TimeoutException e) {
-                throw new Stop("the step transaction " + n + " took at " + at + " did not finish within " + timeout
-                        + ". It may be waiting on a lock another transaction holds");
-            }
-        }
-        for (int n = 1; n <= count; n++) {
-            Step next = await(turnstile, n, "the end of the schedule");
-            if (next != null) {
-                throw new Stop("the schedule ran out while transaction " + n + " still had a step to take: "
-                        + (next.sql() == null ? next.kind() : next.sql()));
-            }
-        }
-    }
-
-    private static String ended(Result result) {
-        return switch (result) {
-            case Result.Committed committed -> "it committed";
-            case Result.RolledBack rolledBack -> "it rolled back after " + rolledBack.cause();
-        };
-    }
-
-    private Step await(Turnstile turnstile, int n, String at) throws Stop, InterruptedException {
-        try {
-            return turnstile.await(n, deadline());
-        } catch (TimeoutException e) {
-            throw new Stop("transaction " + n + " neither took its next step nor finished within " + timeout
-                    + " (at " + at + ")");
-        }
-    }
-
     private long deadline() {
         // Overflows for a very long timeout, which is fine: deadlines are only ever compared by
         // subtracting nanoTime, and that wraps back round.
@@ -224,15 +189,5 @@ public final class Scheduler {
             Thread.currentThread().interrupt();
         }
         return workers.stream().filter(Thread::isAlive).map(Thread::getName).toList();
-    }
-
-    /** Why the scheduler stopped following the schedule. */
-    private static final class Stop extends Exception {
-        @Serial
-        private static final long serialVersionUID = 1L;
-
-        Stop(String message) {
-            super(message, null, false, false);
-        }
     }
 }

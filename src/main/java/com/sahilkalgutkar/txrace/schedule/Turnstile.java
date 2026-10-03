@@ -13,7 +13,8 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * The gate every transaction's thread waits at. Each step parks until the scheduler admits that
- * transaction, and the scheduler waits for the step to finish before admitting the next one.
+ * transaction. The scheduler then waits for the step to finish, or finds it waiting on a lock and
+ * moves on, in which case the step finishes later, during some other transaction's step.
  *
  * <p>Transactions are told apart by connection number, which is why the scheduler opens
  * connection n for transaction n.
@@ -22,9 +23,11 @@ final class Turnstile implements Gate {
 
     private final Map<Integer, Step> waiting = new HashMap<>();
     private final Set<Integer> finished = new HashSet<>();
+    private final Map<Integer, Integer> released = new HashMap<>();
+    private final Map<Integer, Integer> completed = new HashMap<>();
+    // Transactions with a database transaction open, and so possibly holding locks.
+    private final Set<Integer> holding = new HashSet<>();
     private int admitted;
-    private long released;
-    private long completed;
     private boolean aborted;
 
     @Override
@@ -55,7 +58,13 @@ final class Turnstile implements Gate {
 
     @Override
     public synchronized void after(Step step, Outcome outcome) {
-        completed++;
+        int transaction = step.connection();
+        completed.merge(transaction, 1, Integer::sum);
+        if (step.endsTransaction()) {
+            holding.remove(transaction);
+        } else {
+            holding.add(transaction);
+        }
         notifyAll();
     }
 
@@ -65,22 +74,51 @@ final class Turnstile implements Gate {
      */
     synchronized Step await(int transaction, long deadline) throws InterruptedException, TimeoutException {
         while (!waiting.containsKey(transaction) && !finished.contains(transaction)) {
-            waitUntil(deadline);
+            long left = deadline - System.nanoTime();
+            if (left <= 0) {
+                throw new TimeoutException();
+            }
+            TimeUnit.NANOSECONDS.timedWait(this, left);
         }
         return waiting.get(transaction);
     }
 
-    /** Lets one waiting step through and waits for it to finish. */
-    synchronized void release(int transaction, long deadline) throws InterruptedException, TimeoutException {
+    /** Lets the transaction's waiting step through, without waiting for it to finish. */
+    synchronized void release(int transaction) {
         admitted = transaction;
-        released++;
+        released.merge(transaction, 1, Integer::sum);
         notifyAll();
-        while (completed < released) {
-            waitUntil(deadline);
-        }
     }
 
-    synchronized void finished(int transaction) {
+    /** Waits up to {@code nanos} for the transaction's released steps to finish, and says whether they have. */
+    synchronized boolean awaitDone(int transaction, long nanos) throws InterruptedException {
+        long deadline = System.nanoTime() + nanos;
+        long left;
+        while (!done(transaction) && (left = deadline - System.nanoTime()) > 0) {
+            TimeUnit.NANOSECONDS.timedWait(this, left);
+        }
+        return done(transaction);
+    }
+
+    /** Waits up to {@code nanos} for any step to finish or any transaction to park or finish. */
+    synchronized void awaitAnything(long nanos) throws InterruptedException {
+        TimeUnit.NANOSECONDS.timedWait(this, nanos);
+    }
+
+    synchronized boolean done(int transaction) {
+        // At least, not exactly: after an abort, rollbacks go through without being released.
+        return completed.getOrDefault(transaction, 0) >= released.getOrDefault(transaction, 0);
+    }
+
+    synchronized boolean holding(int transaction) {
+        return holding.contains(transaction);
+    }
+
+    synchronized boolean finished(int transaction) {
+        return finished.contains(transaction);
+    }
+
+    synchronized void finish(int transaction) {
         finished.add(transaction);
         notifyAll();
     }
@@ -89,13 +127,5 @@ final class Turnstile implements Gate {
         aborted = true;
         admitted = 0;
         notifyAll();
-    }
-
-    private void waitUntil(long deadline) throws InterruptedException, TimeoutException {
-        long left = deadline - System.nanoTime();
-        if (left <= 0) {
-            throw new TimeoutException();
-        }
-        TimeUnit.NANOSECONDS.timedWait(this, left);
     }
 }

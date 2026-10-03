@@ -73,6 +73,9 @@ abstract class LockWatch implements AutoCloseable {
         return true;
     }
 
+    @Override
+    public abstract void close() throws SQLException;
+
     abstract long session(Connection connection) throws SQLException;
 
     /** The session holding the lock {@code session} waits on, or a negative number if it is not waiting. */

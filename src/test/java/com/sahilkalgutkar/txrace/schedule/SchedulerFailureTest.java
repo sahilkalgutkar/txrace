@@ -125,12 +125,12 @@ class SchedulerFailureTest {
     }
 
     @Test
-    void reportsAStepThatWaitsOnALock() throws SQLException {
+    void fallsBackToTheTimeoutOnADatabaseItCannotAskAboutLocks() throws SQLException {
         try (Connection connection = h2.getConnection(); Statement statement = connection.createStatement()) {
             // Long enough that the scheduler gives up before H2 does.
             statement.execute("SET DEFAULT_LOCK_TIMEOUT 10000");
         }
-        Scheduler scheduler = new Scheduler(h2, Duration.ofMillis(300));
+        Scheduler scheduler = new Scheduler(OtherDatabase.over(h2), Duration.ofMillis(300));
 
         ScheduleException e = catchThrowableOfType(ScheduleException.class,
                 () -> scheduler.run(Schedule.parse("1 2 1 2 1 2"), deposit(1, 30), deposit(1, 50)));
