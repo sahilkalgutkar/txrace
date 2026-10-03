@@ -2,6 +2,7 @@ package com.sahilkalgutkar.txrace.jdbc;
 
 import com.sahilkalgutkar.txrace.trace.Trace;
 import java.io.PrintWriter;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
@@ -37,6 +38,18 @@ public final class TracingDataSource implements DataSource {
 
     public Trace trace() {
         return trace;
+    }
+
+    /**
+     * The driver's connection behind a traced one, or the connection itself if it is not traced.
+     * Nothing run on it is traced or gated, so it is only for tools that watch from the side.
+     */
+    public static Connection unwrapped(Connection connection) {
+        if (Proxy.isProxyClass(connection.getClass())
+                && Proxy.getInvocationHandler(connection) instanceof ConnectionHandler handler) {
+            return (Connection) handler.real;
+        }
+        return connection;
     }
 
     @Override

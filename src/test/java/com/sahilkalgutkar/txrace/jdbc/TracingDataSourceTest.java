@@ -271,6 +271,20 @@ class TracingDataSourceTest {
     }
 
     @Test
+    void unwrapsToTheDriverConnectionForToolsWatchingFromTheSide(DataSource h2) throws SQLException {
+        TracingDataSource traced = new TracingDataSource(h2);
+
+        try (Connection connection = traced.getConnection(); Connection raw = h2.getConnection()) {
+            Connection unwrapped = TracingDataSource.unwrapped(connection);
+            assertThat(unwrapped).isInstanceOf(JdbcConnection.class);
+            unwrapped.createStatement().execute("SELECT 1");
+            assertThat(TracingDataSource.unwrapped(raw)).isSameAs(raw);
+        }
+
+        assertThat(traced.trace().events()).isEmpty();
+    }
+
+    @Test
     void proxiesAreEqualOnlyToThemselves(DataSource h2) throws SQLException {
         TracingDataSource traced = new TracingDataSource(h2);
 
