@@ -157,6 +157,20 @@ abstract class LockWaitContract {
     }
 
     @Test
+    void stepsFreedTogetherThatDoNotCompeteStillRun() throws SQLException {
+        // 2 and 3 wait on different rows of 1's, so when 1 commits, neither can get in the other's way.
+        Run run = scheduler.run(Schedule.parse("1 2 3 1 2 3"),
+                update("UPDATE account SET balance = balance + 1 WHERE id IN (1, 2)"),
+                update("UPDATE account SET balance = balance + 10 WHERE id = 1"),
+                update("UPDATE account SET balance = balance + 100 WHERE id = 2"));
+
+        assertThat(run.results()).containsExactly(
+                new Result.Committed(2), new Result.Committed(1), new Result.Committed(1));
+        assertThat(balance(1)).isEqualTo(111);
+        assertThat(balance(2)).isEqualTo(201);
+    }
+
+    @Test
     void theYoungestTransactionClosingADeadlockIsTheOneThatFails() throws SQLException {
         // Each transfer locks its first account, then waits for the other's. Transaction 2 began
         // after 1 and its wait at position 4 closes the cycle, so both databases fail 2.
