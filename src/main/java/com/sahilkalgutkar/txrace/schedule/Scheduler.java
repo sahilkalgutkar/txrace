@@ -122,7 +122,10 @@ public final class Scheduler {
             for (int i = 0; i < count; i++) {
                 Connection connection = traced.getConnection();
                 connections.add(connection);
-                // Before autocommit goes off, so the question does not start a transaction.
+                // With autocommit on, so the question does not start a transaction. A pool can
+                // hand out connections with it off, and nothing has been sent yet, so turning it
+                // on commits nothing.
+                connection.setAutoCommit(true);
                 watch.register(i + 1, TracingDataSource.unwrapped(connection));
                 connection.setAutoCommit(false);
             }
