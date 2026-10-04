@@ -21,7 +21,8 @@ import org.junit.jupiter.api.extension.ParameterResolver;
 public final class PostgresExtension implements ParameterResolver, AfterEachCallback {
 
     private static final AtomicInteger NEXT = new AtomicInteger();
-    private static final ExtensionContext.Namespace NAMESPACE = ExtensionContext.Namespace.create(PostgresExtension.class);
+    private static final ExtensionContext.Namespace NAMESPACE =
+            ExtensionContext.Namespace.create(PostgresExtension.class);
     private static EmbeddedPostgres server;
 
     private static synchronized EmbeddedPostgres server() {
