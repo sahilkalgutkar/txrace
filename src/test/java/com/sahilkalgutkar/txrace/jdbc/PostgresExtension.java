@@ -56,15 +56,18 @@ public final class PostgresExtension implements ParameterResolver, AfterEachCall
         return parameter.getParameter().getType() == DataSource.class;
     }
 
+    /** The same database for every parameter of one test, a @BeforeEach method's included. */
     @Override
     public Object resolveParameter(ParameterContext parameter, ExtensionContext context) {
-        String name = "txrace" + NEXT.incrementAndGet();
-        try {
-            admin("CREATE DATABASE " + name);
-        } catch (SQLException e) {
-            throw new IllegalStateException("could not create database " + name, e);
-        }
-        context.getStore(NAMESPACE).put("database", name);
+        String name = context.getStore(NAMESPACE).computeIfAbsent("database", key -> {
+            String created = "txrace" + NEXT.incrementAndGet();
+            try {
+                admin("CREATE DATABASE " + created);
+            } catch (SQLException e) {
+                throw new IllegalStateException("could not create database " + created, e);
+            }
+            return created;
+        }, String.class);
         return server().getDatabase("postgres", name);
     }
 
