@@ -1,6 +1,7 @@
 package com.sahilkalgutkar.txrace.schedule;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 import com.sahilkalgutkar.txrace.jdbc.H2Extension;
 import java.sql.SQLException;
@@ -28,6 +29,18 @@ class H2LockWaitTest extends LockWaitContract {
     @Override
     String deadlockState() {
         return "40001";
+    }
+
+    @Test
+    void waitersForOneRowRaceWhenItIsFreed() {
+        // H2 has both later updates wait on the holder itself, so its commit frees both at once.
+        ScheduleException e = catchThrowableOfType(ScheduleException.class,
+                () -> scheduler.run(Schedule.parse("1 2 3 1 2 3"),
+                        update("UPDATE account SET balance = balance + 1 WHERE id = 1"),
+                        update("UPDATE account SET balance = balance + 10 WHERE id = 1"),
+                        update("UPDATE account SET balance = balance + 100 WHERE id = 1")));
+
+        assertThat(e).hasMessageContaining("stop waiting at once");
     }
 
     @Test

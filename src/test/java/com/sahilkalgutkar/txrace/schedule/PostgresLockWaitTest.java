@@ -35,6 +35,19 @@ class PostgresLockWaitTest extends LockWaitContract {
     }
 
     @Test
+    void waitersForOneRowGoInTheOrderTheyQueued() throws SQLException {
+        // The third update queues behind the second, not behind the holder, so when the holder
+        // commits only the second goes.
+        Run run = scheduler.run(Schedule.parse("1 2 3 1 2 3"),
+                update("UPDATE account SET balance = balance + 1 WHERE id = 1"),
+                update("UPDATE account SET balance = balance + 10 WHERE id = 1"),
+                update("UPDATE account SET balance = balance + 100 WHERE id = 1"));
+
+        assertThat(run.results()).containsOnly(new Result.Committed(1));
+        assertThat(balance(1)).isEqualTo(211);
+    }
+
+    @Test
     void repeatableReadRefusesTheUpdateInsteadOfLosingIt() throws SQLException {
         Transaction first = repeatableRead(deposit(1, 30));
         Transaction second = repeatableRead(deposit(1, 50));

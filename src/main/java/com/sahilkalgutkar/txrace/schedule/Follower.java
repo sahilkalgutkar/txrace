@@ -59,7 +59,7 @@ final class Follower {
             awaitTurn(n, at);
             turnstile.release(n);
             finish(n, at);
-            settle();
+            settle(at);
         }
         for (int n = 1; n <= count; n++) {
             while (stuck.contains(n)) {
@@ -79,6 +79,10 @@ final class Follower {
 
     /** Waits until transaction n is parked at the gate, ready for its next step. */
     private void awaitTurn(int n, String at) throws Stop, InterruptedException, SQLException {
+        if (stuck.contains(n)) {
+            // Its wait may have ended since the last step settled.
+            settle(at);
+        }
         while (stuck.contains(n)) {
             if (!deadlocked()) {
                 throw new Stop(at + " asks for transaction " + n + ", whose step is still waiting on a lock held by "
@@ -116,8 +120,16 @@ final class Follower {
      * Lets every stuck step settle: finish, or be seen waiting on a lock again. A finished step
      * can free others, for instance when an error aborts its transaction, so this repeats until
      * nothing changes.
+     *
+     * <p>When one step frees two waiting steps at once, they race, and the database decides which
+     * goes first. The loser ends up waiting behind the winner, which is how that shows: a step
+     * still stuck, now behind a step freed in the same settle, and behind someone else before.
+     * PostgreSQL queues a second waiter for a row behind the first, not behind the holder, so
+     * there the order is the queue's and the run stays repeatable.
      */
-    private void settle() throws Stop, InterruptedException, SQLException {
+    private void settle(String at) throws Stop, InterruptedException, SQLException {
+        Map<Integer, Integer> before = new HashMap<>(behind);
+        Set<Integer> freed = new TreeSet<>();
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -132,8 +144,16 @@ final class Follower {
                 }
                 if (turnstile.done(n)) {
                     stuck.remove(n);
+                    freed.add(n);
                     changed = true;
                 }
+            }
+        }
+        for (int n : stuck) {
+            Integer now = behind.get(n);
+            if (now != null && freed.contains(now) && !now.equals(before.get(n))) {
+                throw new Stop("the step at " + at + " let transactions " + now + " and " + n + " stop waiting at once,"
+                        + " and the database chose which went first, so this schedule cannot be replayed exactly");
             }
         }
     }
@@ -174,7 +194,7 @@ final class Follower {
             }
             turnstile.awaitAnything(POLL);
         }
-        settle();
+        settle("the end of a deadlock");
     }
 
     private String holder(int n) {

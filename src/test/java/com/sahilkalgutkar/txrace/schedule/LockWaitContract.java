@@ -28,6 +28,7 @@ abstract class LockWaitContract {
         try (Connection connection = database.getConnection(); Statement statement = connection.createStatement()) {
             prepare(statement);
             statement.execute("CREATE TABLE account (id INT PRIMARY KEY, balance INT NOT NULL)");
+            statement.execute("CREATE TABLE item (id INT PRIMARY KEY)");
         }
         reset();
     }
@@ -136,6 +137,23 @@ abstract class LockWaitContract {
                 .contains("WHERE id = 1  -> updated 1 after waiting for a lock");
         assertThat(balance(1)).isEqualTo(210);
         assertThat(balance(2)).isEqualTo(111);
+    }
+
+    @Test
+    void refusesAScheduleWhereOneStepFreesTwoWaitersAtOnce() {
+        // 2 and 3 both wait to see whether 1's row with the same key commits. When 1 rolls back,
+        // both go, and which inserts first is the database's choice.
+        Transaction changeOfMind = connection -> {
+            connection.createStatement().executeUpdate("INSERT INTO item VALUES (5)");
+            throw new IllegalStateException("changed my mind");
+        };
+        Transaction insert = update("INSERT INTO item VALUES (5)");
+
+        ScheduleException e = catchThrowableOfType(ScheduleException.class,
+                () -> scheduler.run(Schedule.parse("1 2 3 1 2 3"), changeOfMind, insert, insert));
+
+        assertThat(e).hasMessageStartingWith("the step at position 4 of \"1 2 3 1 2 3\" let transactions")
+                .hasMessageContaining("stop waiting at once, and the database chose which went first");
     }
 
     @Test
