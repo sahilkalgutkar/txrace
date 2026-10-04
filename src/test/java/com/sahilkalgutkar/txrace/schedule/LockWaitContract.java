@@ -157,18 +157,32 @@ abstract class LockWaitContract {
     }
 
     @Test
-    void theDatabaseBreaksADeadlock() throws SQLException {
-        // Each transfer locks its first account, then waits for the other's.
+    void theYoungestTransactionClosingADeadlockIsTheOneThatFails() throws SQLException {
+        // Each transfer locks its first account, then waits for the other's. Transaction 2 began
+        // after 1 and its wait at position 4 closes the cycle, so both databases fail 2.
         Run run = scheduler.run(Schedule.parse("1 2 1 2 2 1"), transfer(1, 2), transfer(2, 1));
 
-        Result.RolledBack victim = (Result.RolledBack) run.result(deadlockVictim());
-        assertThat(((SQLException) victim.cause()).getSQLState()).isEqualTo(deadlockState());
-        assertThat(run.result(3 - deadlockVictim())).isEqualTo(new Result.Committed(null));
+        assertThat(run.result(1)).isEqualTo(new Result.Committed(null));
+        assertThat(sqlState(run.result(2))).isEqualTo(deadlockState());
         assertThat(balance(1) + balance(2)).isEqualTo(200);
     }
 
-    /** Which transfer the database picks to fail. */
-    abstract int deadlockVictim();
+    @Test
+    void whenTheOldestClosesADeadlockTheDatabasesDisagreeOnWhoFails() throws SQLException {
+        // Here transaction 1's wait closes the cycle, and 2 is still the younger.
+        Run run = scheduler.run(Schedule.parse("1 2 2 1 1 2"), transfer(1, 2), transfer(2, 1));
+
+        int victim = victimWhenTheOldestClosesTheCycle();
+        assertThat(sqlState(run.result(victim))).isEqualTo(deadlockState());
+        assertThat(run.result(3 - victim)).isEqualTo(new Result.Committed(null));
+        assertThat(balance(1) + balance(2)).isEqualTo(200);
+    }
+
+    private static String sqlState(Result result) {
+        return ((SQLException) ((Result.RolledBack) result).cause()).getSQLState();
+    }
+
+    abstract int victimWhenTheOldestClosesTheCycle();
 
     abstract String deadlockState();
 }

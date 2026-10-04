@@ -21,17 +21,34 @@ class PostgresLockWaitTest extends LockWaitContract {
     }
 
     /**
-     * PostgreSQL looks for a cycle only once a step has waited for deadlock_timeout. Transaction
-     * 1 started waiting first, so its check runs first, finds the cycle, and fails itself.
+     * PostgreSQL fails whichever wait finds the cycle when it checks, and the scheduler waits out
+     * every check before moving on, so that is always the wait that closed it.
      */
     @Override
-    int deadlockVictim() {
+    int victimWhenTheOldestClosesTheCycle() {
         return 1;
     }
 
     @Override
     String deadlockState() {
         return "40P01";
+    }
+
+    @Test
+    void whoADeadlockFailsDoesNotDependOnHowLongTheTransactionsTakeBetweenSteps() throws SQLException {
+        // Transaction 2 thinks for longer than deadlock_timeout between its two updates. Without
+        // waiting out each check, 1's check would find the cycle first and 1 would fail instead.
+        Transaction slow = connection -> {
+            connection.createStatement().executeUpdate("UPDATE account SET balance = balance - 10 WHERE id = 2");
+            Thread.sleep(250);
+            connection.createStatement().executeUpdate("UPDATE account SET balance = balance + 10 WHERE id = 1");
+            return null;
+        };
+
+        Run run = scheduler.run(Schedule.parse("1 2 1 2 2 1"), transfer(1, 2), slow);
+
+        assertThat(run.result(1)).isEqualTo(new Result.Committed(null));
+        assertThat(run.result(2)).isInstanceOf(Result.RolledBack.class);
     }
 
     @Test

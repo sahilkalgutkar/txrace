@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 
 /**
@@ -80,6 +81,13 @@ abstract class LockWatch implements AutoCloseable {
         return true;
     }
 
+    /**
+     * How long to keep watching a step newly seen waiting before leaving it behind, so that the
+     * database has decided whether the wait closes a deadlock. Without it, which transaction a
+     * deadlock fails depends on how long the steps around it took.
+     */
+    abstract long settleNanos();
+
     @Override
     public abstract void close() throws SQLException;
 
@@ -98,9 +106,12 @@ abstract class LockWatch implements AutoCloseable {
     private static final class Postgres extends LockWatch {
         private final Connection side;
         private final PreparedStatement blockers;
+        private final long deadlockTimeoutMillis;
 
         Postgres(Connection side) throws SQLException {
             this.side = side;
+            this.deadlockTimeoutMillis = single(side,
+                    "SELECT setting::bigint FROM pg_settings WHERE name = 'deadlock_timeout'");
             // pg_blocking_pids reads the lock table, which changes as soon as a holder lets go,
             // so it never reports a waiter that has already been granted its lock.
             this.blockers = side.prepareStatement("SELECT pg_blocking_pids(?)");
@@ -109,6 +120,14 @@ abstract class LockWatch implements AutoCloseable {
         @Override
         long session(Connection connection) throws SQLException {
             return single(connection, "SELECT pg_backend_pid()");
+        }
+
+        // PostgreSQL looks for a deadlock once per wait, deadlock_timeout after it starts. Waiting
+        // that out means every earlier wait has had its check, so when a step closes a cycle, its
+        // own check is the one that finds it, and it is the step PostgreSQL fails.
+        @Override
+        long settleNanos() {
+            return TimeUnit.MILLISECONDS.toNanos(deadlockTimeoutMillis + 50);
         }
 
         // Can name more than one: the holder, and anyone queued ahead for the same lock.
@@ -141,6 +160,13 @@ abstract class LockWatch implements AutoCloseable {
         @Override
         long session(Connection connection) throws SQLException {
             return single(connection, "SELECT SESSION_ID()");
+        }
+
+        // H2 looks for a cycle as soon as a step starts waiting and fails its youngest member, so
+        // a moment is enough for that to play out.
+        @Override
+        long settleNanos() {
+            return TimeUnit.MILLISECONDS.toNanos(50);
         }
 
         @Override
@@ -180,6 +206,11 @@ abstract class LockWatch implements AutoCloseable {
         @Override
         long[] blockersOf(long session) {
             return new long[0];
+        }
+
+        @Override
+        long settleNanos() {
+            return 0;
         }
 
         @Override

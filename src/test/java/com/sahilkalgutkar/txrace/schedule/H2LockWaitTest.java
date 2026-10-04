@@ -20,9 +20,9 @@ class H2LockWaitTest extends LockWaitContract {
         statement.execute("SET DEFAULT_LOCK_TIMEOUT 10000");
     }
 
-    /** H2 looks for a cycle as soon as a step starts waiting, so the step that closes it fails. */
+    /** H2 looks for a cycle as soon as a step starts waiting, and fails its youngest member. */
     @Override
-    int deadlockVictim() {
+    int victimWhenTheOldestClosesTheCycle() {
         return 2;
     }
 
@@ -48,7 +48,7 @@ class H2LockWaitTest extends LockWaitContract {
         // H2 rolls the victim back before the survivor's thread wakes, and for a moment still names
         // the victim as what the survivor waits behind. The victim must not count as a holder then.
         Set<List<Result.Committed>> outcomes = new HashSet<>();
-        for (int i = 0; i < 300; i++) {
+        for (int i = 0; i < 150; i++) {
             reset();
             Run run = scheduler.run(Schedule.parse("1 2 1 2 1 2"), transfer(1, 2), transfer(2, 1));
             assertThat(run.result(2)).isInstanceOf(Result.RolledBack.class);

@@ -103,9 +103,16 @@ final class Follower {
         long deadline = deadline();
         while (!turnstile.awaitDone(n, POLL)) {
             if (waitsOnALock(n)) {
-                stuck.add(n);
-                trace.markWaiting(n);
-                return;
+                // A deadlock this wait closes ends in a failure inside this step, before anything
+                // else runs, rather than whenever the database next looks.
+                if (turnstile.awaitDone(n, watch.settleNanos())) {
+                    return;
+                }
+                if (waitsOnALock(n)) {
+                    stuck.add(n);
+                    trace.markWaiting(n);
+                    return;
+                }
             }
             if (System.nanoTime() - deadline >= 0) {
                 throw new Stop("the step transaction " + n + " took at " + at + " did not finish within " + timeout
