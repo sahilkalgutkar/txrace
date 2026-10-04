@@ -106,15 +106,36 @@ REPEATABLE READ that fixes its snapshot before the schedule says it should.
 The same schedule then behaves the way each database documents. Under
 PostgreSQL's READ COMMITTED, transaction 2's update overwrites transaction 1's
 once the lock is free, and the deposit is lost. Under REPEATABLE READ, the same
-update fails with `40001` instead. When two transfers lock their first accounts
-and then wait for each other's, H2 fails the step that closes the cycle at
-once, while PostgreSQL waits for `deadlock_timeout` and fails the transaction
-that started waiting first. A schedule that asks for a transaction that is
-still waiting is refused, unless every transaction still running is waiting,
-because that is a deadlock only the database can break.
+update fails with `40001` instead.
+
+Deadlocks needed one more thing to stay repeatable. PostgreSQL checks a wait
+for a deadlock once, `deadlock_timeout` after it starts, and fails whichever
+wait finds the cycle. My first version moved on as soon as it saw a step
+waiting, so which transaction failed depended on how long the steps in
+between took. Now I watch every newly waiting step for `deadlock_timeout`
+before leaving it, so each earlier wait has had its check, and the wait that
+closes a cycle is always the one PostgreSQL fails. H2 decides when the wait
+starts and fails the youngest transaction in the cycle. When the youngest
+closes it, both fail the same one; when the oldest closes it, they disagree,
+and the tests pin down both. The price is that every lock wait on PostgreSQL
+costs `deadlock_timeout`, so a test database wants it set low; mine use 100ms.
+
+One step can free two waiting steps at once: a rollback that lets two inserts
+of the same key go, say. They race, and the database picks the order, so the
+same schedule could end two ways. The loser ends up waiting behind the
+winner, which is how I spot it, and I refuse the schedule rather than report
+whichever way it went. PostgreSQL queues a second waiter for a row behind the
+first, not behind the holder, so updates of one row still go in queue order
+there; H2 lets them race.
+
+A schedule that asks for a transaction that is still waiting is refused,
+unless every transaction still running is waiting, because that is a deadlock
+only the database can break. The watch takes one connection of its own, so a
+pool needs room for one more than the number of transactions.
 
 Any other database is never seen waiting, and a stuck step is reported once
-the scheduler's timeout runs out.
+the scheduler's timeout runs out. So is any wait on H2 when the user is not an
+admin, because H2 shows other sessions only to admins.
 
 ### Known gaps
 
@@ -138,6 +159,8 @@ a failed batch keeps its per-row counts. These are still open:
   as those rows arrive.
 - `CallableStatement` parameters: named ones are not recorded, and OUT
   parameters shift the positions of the rest.
+- On H2, waits for a table lock rather than a row lock, which only DDL takes,
+  do not show in `INFORMATION_SCHEMA.SESSIONS`, so they run into the timeout.
 - Savepoints, and connections unwrapped to their driver class.
 
 ## Status
