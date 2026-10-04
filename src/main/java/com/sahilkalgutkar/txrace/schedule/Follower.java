@@ -5,6 +5,8 @@ import com.sahilkalgutkar.txrace.trace.Trace;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
@@ -31,8 +33,9 @@ final class Follower {
     private final Result[] results;
     private final Duration timeout;
     private final long timeoutNanos;
-    // Transactions whose released step is waiting on a lock.
+    // Transactions whose released step is waiting on a lock, and what each was last seen waiting behind.
     private final Set<Integer> stuck = new TreeSet<>();
+    private final Map<Integer, Integer> behind = new HashMap<>();
 
     Follower(Schedule schedule, int count, Turnstile turnstile, LockWatch watch, Trace trace, Result[] results,
             Duration timeout, long timeoutNanos) {
@@ -136,12 +139,19 @@ final class Follower {
     }
 
     /**
-     * Whether n waits on a lock that is really held. H2 can still name a holder for a moment after
-     * it has committed, so a lock counts only if its holder still has a transaction open.
+     * Whether n waits on a lock that is really held, and if so, records behind whom. H2 can still
+     * name a holder for a moment after it has committed, so a transaction counts as a holder only
+     * while it has a transaction open or a step still running. A running step can already hold
+     * locks, such as rows its statement reached first.
      */
     private boolean waitsOnALock(int n) throws SQLException {
-        int blocker = watch.blocker(n);
-        return blocker == LockWatch.OUTSIDE || blocker != LockWatch.NONE && turnstile.holding(blocker);
+        for (int blocker : watch.blockers(n)) {
+            if (blocker == LockWatch.OUTSIDE || turnstile.holding(blocker) || !turnstile.done(blocker)) {
+                behind.put(n, blocker);
+                return true;
+            }
+        }
+        return false;
     }
 
     /** True when every transaction still running is stuck, so only the database can break the cycle. */
@@ -167,8 +177,8 @@ final class Follower {
         settle();
     }
 
-    private String holder(int n) throws SQLException {
-        int blocker = watch.blocker(n);
+    private String holder(int n) {
+        int blocker = behind.getOrDefault(n, LockWatch.NONE);
         return blocker == LockWatch.OUTSIDE ? "a session outside the run" : "transaction " + blocker;
     }
 

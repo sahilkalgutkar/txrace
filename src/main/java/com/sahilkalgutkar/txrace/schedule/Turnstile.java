@@ -60,7 +60,11 @@ final class Turnstile implements Gate {
     public synchronized void after(Step step, Outcome outcome) {
         int transaction = step.connection();
         completed.merge(transaction, 1, Integer::sum);
-        if (step.endsTransaction()) {
+        // SQLState class 40 means the database rolled the transaction back itself, as H2 does to a
+        // deadlock victim, so nothing it held is held any more.
+        boolean rolledBack = outcome instanceof Outcome.Failed failed
+                && failed.sqlState() != null && failed.sqlState().startsWith("40");
+        if (step.endsTransaction() || rolledBack) {
             holding.remove(transaction);
         } else {
             holding.add(transaction);

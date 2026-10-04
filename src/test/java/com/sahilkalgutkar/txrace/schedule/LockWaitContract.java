@@ -115,6 +115,29 @@ abstract class LockWaitContract {
                 "the schedule ran out while transaction 1 was still waiting on a lock held by transaction 2");
     }
 
+    /** One step: run {@code sql} and let the scheduler commit. */
+    static Transaction update(String sql) {
+        return connection -> connection.createStatement().executeUpdate(sql);
+    }
+
+    @Test
+    void aStatementStillWaitingCanAlreadyHoldTheLocksItReachedFirst() throws SQLException {
+        // Transaction 2's single update locks account 1, then waits for account 2, which 1 holds.
+        // Transaction 3 then waits for account 1, held by a statement that has not finished.
+        Run run = scheduler.run(Schedule.parse("1 2 3 1 2 3"),
+                update("UPDATE account SET balance = balance + 1 WHERE id = 2"),
+                update("UPDATE account SET balance = balance + 10 WHERE id IN (1, 2)"),
+                update("UPDATE account SET balance = balance + 100 WHERE id = 1"));
+
+        assertThat(run.results()).containsExactly(
+                new Result.Committed(1), new Result.Committed(2), new Result.Committed(1));
+        assertThat(run.trace().render())
+                .contains("WHERE id IN (1, 2)  -> updated 2 after waiting for a lock")
+                .contains("WHERE id = 1  -> updated 1 after waiting for a lock");
+        assertThat(balance(1)).isEqualTo(210);
+        assertThat(balance(2)).isEqualTo(111);
+    }
+
     @Test
     void theDatabaseBreaksADeadlock() throws SQLException {
         // Each transfer locks its first account, then waits for the other's.
