@@ -150,11 +150,28 @@ abstract class LockWatch implements AutoCloseable {
     private static final class H2 extends LockWatch {
         private final Connection side;
         private final PreparedStatement blockers;
+        private boolean blind;
 
         H2(Connection side) throws SQLException {
             this.side = side;
             this.blockers = side.prepareStatement(
                     "SELECT BLOCKER_ID FROM INFORMATION_SCHEMA.SESSIONS WHERE SESSION_ID = ?");
+        }
+
+        // H2 shows other sessions only to an admin. Anyone else would see every transaction as
+        // never waiting, so the watch says it cannot see rather than report that.
+        @Override
+        void register(int transaction, Connection connection) throws SQLException {
+            super.register(transaction, connection);
+            blockers.setLong(1, session(connection));
+            try (ResultSet rows = blockers.executeQuery()) {
+                blind |= !rows.next();
+            }
+        }
+
+        @Override
+        boolean sees() {
+            return !blind;
         }
 
         @Override
