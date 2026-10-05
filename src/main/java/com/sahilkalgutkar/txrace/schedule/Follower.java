@@ -1,5 +1,6 @@
 package com.sahilkalgutkar.txrace.schedule;
 
+import com.sahilkalgutkar.txrace.trace.Outcome;
 import com.sahilkalgutkar.txrace.trace.Step;
 import com.sahilkalgutkar.txrace.trace.Trace;
 import java.sql.SQLException;
@@ -9,6 +10,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
@@ -37,6 +39,9 @@ final class Follower {
     // Transactions whose released step is waiting on a lock, and what each was last seen waiting behind.
     private final Set<Integer> stuck = new TreeSet<>();
     private final Map<Integer, Integer> behind = new HashMap<>();
+    // What each stuck step is waiting for, where the database says: a new wait can be behind the
+    // same transaction as before, on a different lock.
+    private final Map<Integer, String> awaiting = new HashMap<>();
 
     Follower(int count, Turnstile turnstile, LockWatch watch, Trace trace, Result[] results, Duration timeout,
             long timeoutNanos) {
@@ -180,7 +185,57 @@ final class Follower {
      */
     private void settle(String at) throws Stop, InterruptedException, SQLException {
         Map<Integer, Integer> before = new HashMap<>(behind);
+        Map<Integer, Integer> seen = new HashMap<>(behind);
+        Map<Integer, String> seenAwaiting = new HashMap<>(awaiting);
         Set<Integer> freed = new TreeSet<>();
+        Set<Integer> waitedAnew = new TreeSet<>();
+        while (true) {
+            settleStuck(freed);
+            // A step freed here may have gone on to wait behind someone else. Like a step that has
+            // just been released, it gets the time the database needs to decide whether that wait
+            // closes a deadlock, or the deadlock breaks at some moment later on and what is ready
+            // next depends on timing.
+            Set<Integer> fresh = new TreeSet<>();
+            for (int n : stuck) {
+                if (!Objects.equals(behind.get(n), seen.get(n))
+                        || !Objects.equals(awaiting.get(n), seenAwaiting.get(n))) {
+                    fresh.add(n);
+                    seen.put(n, behind.get(n));
+                    seenAwaiting.put(n, awaiting.get(n));
+                }
+            }
+            if (fresh.isEmpty()) {
+                break;
+            }
+            waitedAnew.addAll(fresh);
+            if (!awaitAnyDone(fresh, watch.settleNanos())) {
+                break;
+            }
+        }
+        // PostgreSQL fails whichever wait's deadlock check runs first. Two waits that started in
+        // the same step reach their checks at nearly the same moment, so either could be failed.
+        if (watch.racesToFindDeadlocks() && waitedAnew.size() > 1) {
+            for (int n : waitedAnew) {
+                if (freed.contains(n) && turnstile.outcome(n) instanceof Outcome.Failed failed
+                        && "40P01".equals(failed.sqlState())) {
+                    throw new Stop("the step at " + at + " set off waits that deadlocked each other, and PostgreSQL"
+                            + " chose to fail transaction " + n + " by whichever check ran first, so this schedule"
+                            + " cannot be replayed exactly", true);
+                }
+            }
+        }
+        for (int n : stuck) {
+            Integer now = behind.get(n);
+            if (now != null && freed.contains(now) && !now.equals(before.get(n))) {
+                throw new Stop("the step at " + at + " let transactions " + now + " and " + n + " stop waiting at once,"
+                        + " and the database chose which went first, so this schedule cannot be replayed exactly",
+                        true);
+            }
+        }
+    }
+
+    /** One pass over the stuck steps, repeated until none finishes. */
+    private void settleStuck(Set<Integer> freed) throws Stop, InterruptedException, SQLException {
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -200,14 +255,19 @@ final class Follower {
                 }
             }
         }
-        for (int n : stuck) {
-            Integer now = behind.get(n);
-            if (now != null && freed.contains(now) && !now.equals(before.get(n))) {
-                throw new Stop("the step at " + at + " let transactions " + now + " and " + n + " stop waiting at once,"
-                        + " and the database chose which went first, so this schedule cannot be replayed exactly",
-                        true);
+    }
+
+    /** Waits up to {@code nanos} for any of {@code steps} to finish, and says whether one did. */
+    private boolean awaitAnyDone(Set<Integer> steps, long nanos) throws InterruptedException {
+        long deadline = System.nanoTime() + nanos;
+        while (steps.stream().noneMatch(turnstile::done)) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0) {
+                return false;
             }
+            turnstile.awaitAnything(Math.min(left, POLL));
         }
+        return true;
     }
 
     /**
@@ -220,6 +280,7 @@ final class Follower {
         for (int blocker : watch.blockers(n)) {
             if (blocker == LockWatch.OUTSIDE || turnstile.holding(blocker) || !turnstile.done(blocker)) {
                 behind.put(n, blocker);
+                awaiting.put(n, watch.awaited(n));
                 return true;
             }
         }

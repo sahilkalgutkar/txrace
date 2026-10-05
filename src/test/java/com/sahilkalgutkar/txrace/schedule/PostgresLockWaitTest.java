@@ -2,6 +2,7 @@ package com.sahilkalgutkar.txrace.schedule;
 
 import static com.sahilkalgutkar.txrace.schedule.SchedulerTest.deposit;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 import com.sahilkalgutkar.txrace.jdbc.PostgresExtension;
 import java.sql.Connection;
@@ -49,6 +50,24 @@ class PostgresLockWaitTest extends LockWaitContract {
 
         assertThat(run.result(1)).isEqualTo(new Result.Committed(null));
         assertThat(run.result(2)).isInstanceOf(Result.RolledBack.class);
+    }
+
+    @Test
+    void refusesWaitsSetOffTogetherThatDeadlockEachOther() throws SQLException {
+        // 1's commit frees 3, which locks account 1 and waits for 2's account 2, and 2, which waits
+        // for account 1. Both waits start at once, so whichever deadlock check runs first decides.
+        for (int i = 0; i < 5; i++) {
+            ScheduleException e = catchThrowableOfType(ScheduleException.class,
+                    () -> scheduler.run(Schedule.parse("1 2 3 2 1 2 3"),
+                            update("UPDATE account SET balance = balance + 1 WHERE id = 1"),
+                            transfer(2, 1),
+                            update("UPDATE account SET balance = balance + 100 WHERE id IN "
+                                    + "(SELECT id FROM account WHERE id IN (1, 2) ORDER BY id FOR UPDATE)")));
+
+            assertThat(e).isNotNull();
+            assertThat(e.unrepeatable()).isTrue();
+            reset();
+        }
     }
 
     @Test

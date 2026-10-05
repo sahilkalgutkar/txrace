@@ -71,6 +71,20 @@ abstract class LockWatch implements AutoCloseable {
                 .orElse(OUTSIDE)).toList();
     }
 
+    /**
+     * What transaction n is waiting for, specific enough to tell a new wait from an old one even
+     * when the holder is the same: a row, then the transaction that wrote it, say. Null when it is
+     * not waiting, or the database cannot say.
+     */
+    String awaited(int transaction) throws SQLException {
+        Long session = sessions.get(transaction);
+        return session == null ? null : awaitedBy(session);
+    }
+
+    String awaitedBy(long session) throws SQLException {
+        return null;
+    }
+
     /** The first of {@link #blockers}, or {@link #NONE}. */
     int blocker(int transaction) throws SQLException {
         List<Integer> blockers = blockers(transaction);
@@ -87,6 +101,14 @@ abstract class LockWatch implements AutoCloseable {
      * deadlock fails depends on how long the steps around it took.
      */
     abstract long settleNanos();
+
+    /**
+     * True when the database picks a deadlock's victim by whichever wait's timer runs out first,
+     * as PostgreSQL does. Two waits that start together can then fail either way.
+     */
+    boolean racesToFindDeadlocks() {
+        return false;
+    }
 
     @Override
     public abstract void close() throws SQLException;
@@ -106,6 +128,7 @@ abstract class LockWatch implements AutoCloseable {
     private static final class Postgres extends LockWatch {
         private final Connection side;
         private final PreparedStatement blockers;
+        private final PreparedStatement awaited;
         private final long deadlockTimeoutMillis;
 
         Postgres(Connection side) throws SQLException {
@@ -115,6 +138,9 @@ abstract class LockWatch implements AutoCloseable {
             // pg_blocking_pids reads the lock table, which changes as soon as a holder lets go,
             // so it never reports a waiter that has already been granted its lock.
             this.blockers = side.prepareStatement("SELECT pg_blocking_pids(?)");
+            // A backend waits for one lock at a time, and this names it.
+            this.awaited = side.prepareStatement("SELECT concat_ws(':', locktype, transactionid, relation, page, tuple)"
+                    + " FROM pg_locks WHERE pid = ? AND NOT granted");
         }
 
         @Override
@@ -128,6 +154,19 @@ abstract class LockWatch implements AutoCloseable {
         @Override
         long settleNanos() {
             return TimeUnit.MILLISECONDS.toNanos(deadlockTimeoutMillis + 50);
+        }
+
+        @Override
+        boolean racesToFindDeadlocks() {
+            return true;
+        }
+
+        @Override
+        String awaitedBy(long session) throws SQLException {
+            awaited.setInt(1, (int) session);
+            try (ResultSet rows = awaited.executeQuery()) {
+                return rows.next() ? rows.getString(1) : null;
+            }
         }
 
         // Can name more than one: the holder, and anyone queued ahead for the same lock.

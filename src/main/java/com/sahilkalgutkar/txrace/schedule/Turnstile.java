@@ -27,6 +27,7 @@ final class Turnstile implements Gate {
     private final Map<Integer, Integer> completed = new HashMap<>();
     // Transactions with a database transaction open, and so possibly holding locks.
     private final Set<Integer> holding = new HashSet<>();
+    private final Map<Integer, Outcome> last = new HashMap<>();
     private int admitted;
     private boolean aborted;
 
@@ -60,6 +61,7 @@ final class Turnstile implements Gate {
     public synchronized void after(Step step, Outcome outcome) {
         int transaction = step.connection();
         completed.merge(transaction, 1, Integer::sum);
+        last.put(transaction, outcome);
         // SQLState class 40 means the database rolled the transaction back itself, as H2 does to a
         // deadlock victim, so nothing it held is held any more.
         boolean rolledBack = outcome instanceof Outcome.Failed failed
@@ -112,6 +114,11 @@ final class Turnstile implements Gate {
     synchronized boolean done(int transaction) {
         // At least, not exactly: after an abort, rollbacks go through without being released.
         return completed.getOrDefault(transaction, 0) >= released.getOrDefault(transaction, 0);
+    }
+
+    /** What the transaction's latest finished step came to, or null before its first. */
+    synchronized Outcome outcome(int transaction) {
+        return last.get(transaction);
     }
 
     synchronized boolean holding(int transaction) {
