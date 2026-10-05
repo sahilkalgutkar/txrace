@@ -29,6 +29,7 @@ class ExplorerTest {
     void createAccounts(DataSource h2) throws SQLException {
         this.h2 = h2;
         try (Connection connection = h2.getConnection(); Statement statement = connection.createStatement()) {
+            statement.execute("SET DEFAULT_LOCK_TIMEOUT 10000");
             statement.execute("CREATE TABLE account (id INT PRIMARY KEY, balance INT NOT NULL)");
         }
     }
@@ -145,6 +146,21 @@ class ExplorerTest {
         assertThat(exploration.runs()).extracting(Exploration.Explored::state).contains(180, 150, 130);
         assertThatThrownBy(() -> new Explorer(h2, ExplorerTest::openAccounts).withPreemptions(-1))
                 .hasMessageContaining("can't be negative");
+    }
+
+    @Test
+    void keepsOrdersTheDatabaseDecidedApartFromTheRest() throws SQLException {
+        // H2 has later updates of a row wait on its holder, so one commit can free two of them.
+        Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
+                .observing(ExplorerTest::balance)
+                .explore(LockWaitContract.update("UPDATE account SET balance = balance + 1 WHERE id = 1"),
+                        LockWaitContract.update("UPDATE account SET balance = balance + 10 WHERE id = 1"),
+                        LockWaitContract.update("UPDATE account SET balance = balance + 100 WHERE id = 1"));
+
+        assertThat(exploration.complete()).isTrue();
+        assertThat(exploration.refused()).isNotEmpty()
+                .allSatisfy(refused -> assertThat(refused.reason().unrepeatable()).isTrue());
+        assertThat(exploration.runs()).isNotEmpty().extracting(Exploration.Explored::state).containsOnly(211);
     }
 
     @Test
