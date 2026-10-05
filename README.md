@@ -137,6 +137,47 @@ Any other database is never seen waiting, and a stuck step is reported once
 the scheduler's timeout runs out. So is any wait on H2 when the user is not an
 admin, because H2 shows other sessions only to admins.
 
+## Exploring orders
+
+`Explorer` runs the transactions in every order their steps can take, each
+from the same starting state, and keeps what it observed after each run:
+
+```java
+Exploration exploration = new Explorer(dataSource, database -> openAccounts(database))
+        .observing(database -> balance(database))
+        .explore(deposit(1, 30), deposit(1, 50));
+```
+
+The orders aren't known up front. A transaction can branch on what it reads,
+and a step waiting on a lock isn't ready to go. So I search them the way the
+CHESS paper does, without saving any state. One run records which transactions
+were ready at each step. Then, for every ready transaction that wasn't picked,
+I run again with the same choices up to that point and that transaction next,
+and carry on from there. Each order runs exactly once. For independent
+transactions the count matches the closed form, `(a+b+...)! / (a! b! ...)`:
+560 for three transactions of three, three and two steps.
+
+The number of orders grows fast, so the search can be bounded by preemptions:
+switching away from a transaction that could have taken another step. With a
+bound of zero only the serial orders run. Most concurrency bugs need one or
+two preemptions to show, and the deposits bear that out:
+
+| Preemption bound | Orders run | Ends at 180 | Ends at 150 | Ends at 130 |
+|---|---|---|---|---|
+| 0 | 2 | 2 | 0 | 0 |
+| 1 | 6 | 2 | 2 | 2 |
+| 2 | 12 | 2 | 5 | 5 |
+| none | 14 | 2 | 6 | 6 |
+
+With no bound there are 14 orders rather than the 20 that two independent
+three-step transactions would have, because once one deposit holds the row,
+the other's update waits and isn't ready.
+
+An order the scheduler refuses as unrepeatable is kept apart rather than
+failing the search. Three updates of one row give 30 orders on PostgreSQL, all
+ending at the same balance. H2 runs 24 of them and refuses 6, because there a
+commit frees both waiting updates at once.
+
 ### Known gaps
 
 A review of this layer turned up places where work reaches the database
@@ -168,7 +209,7 @@ a failed batch keeps its per-row counts. These are still open:
 - [x] JDBC proxy, gate and trace
 - [x] A scheduler that replays a given order of steps exactly
 - [x] Noticing a statement that is waiting on another transaction's lock (Postgres and H2)
-- [ ] Exploring orders, with a bound on preemptions
+- [x] Exploring orders, with a bound on preemptions
 - [ ] Comparing each order against every serial order, and printing the shortest failing one
 - [ ] The Hermitage anomaly cases as a test suite
 - [ ] A real target
