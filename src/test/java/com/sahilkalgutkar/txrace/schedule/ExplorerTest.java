@@ -107,6 +107,47 @@ class ExplorerTest {
     }
 
     @Test
+    void withNoPreemptionsRunsOnlyTheSerialOrders() throws SQLException {
+        Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
+                .withPreemptions(0)
+                .explore(reads(1, 1), reads(2, 1), reads(3, 1));
+
+        assertThat(exploration.runs()).extracting(e -> e.run().schedule().toString()).containsExactlyInAnyOrder(
+                "1 1 2 2 3 3", "1 1 3 3 2 2", "2 2 1 1 3 3", "2 2 3 3 1 1", "3 3 1 1 2 2", "3 3 2 2 1 1");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"2 2", "3 1", "1 1", "4 2"})
+    void withOnePreemptionTwoTransactionsHaveAsManyOrdersAsSteps(String reads) throws SQLException {
+        // Run one to the end, or stop it once for the other to run to the end: a + b orders in all.
+        int a = Integer.parseInt(reads.split(" ")[0]) + 1;
+        int b = Integer.parseInt(reads.split(" ")[1]) + 1;
+
+        Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
+                .withPreemptions(1)
+                .explore(reads(1, a - 1), reads(2, b - 1));
+
+        assertThat(exploration.runs()).hasSize(a + b);
+        for (Exploration.Explored explored : exploration.runs()) {
+            List<Integer> order = explored.run().schedule().order();
+            assertThat(IntStream.range(1, order.size()).filter(i -> !order.get(i).equals(order.get(i - 1))))
+                    .hasSizeLessThanOrEqualTo(2);
+        }
+    }
+
+    @Test
+    void onePreemptionIsEnoughToLoseADeposit() throws SQLException {
+        Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
+                .withPreemptions(1)
+                .observing(ExplorerTest::balance)
+                .explore(deposit(1, 30), deposit(1, 50));
+
+        assertThat(exploration.runs()).extracting(Exploration.Explored::state).contains(180, 150, 130);
+        assertThatThrownBy(() -> new Explorer(h2, ExplorerTest::openAccounts).withPreemptions(-1))
+                .hasMessageContaining("can't be negative");
+    }
+
+    @Test
     void saysWhenItStoppedAtItsLimit() throws SQLException {
         Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
                 .limitedTo(5)

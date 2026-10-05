@@ -20,6 +20,11 @@ import javax.sql.DataSource;
  * state: run once, recording which transactions were ready at each step, then for every ready
  * transaction that was not picked, run again with the same choices up to there and that one next,
  * carrying on from there by the default rule. Each order is run exactly once.
+ *
+ * <p>The number of orders grows fast, so the search can be bounded by preemptions: switching away
+ * from a transaction that could have taken another step. The default rule never preempts, so
+ * every run stays within the bound its prefix set. Most concurrency bugs need only one or two
+ * preemptions to show, which is what makes a small bound worth running.
  */
 public final class Explorer {
 
@@ -39,23 +44,34 @@ public final class Explorer {
     private final Setup setup;
     private final Duration timeout;
     private final Observation observation;
+    private final int preemptions;
     private final int limit;
 
     public Explorer(DataSource dataSource, Setup setup) {
-        this(dataSource, setup, Duration.ofSeconds(5), database -> null, 10_000);
+        this(dataSource, setup, Duration.ofSeconds(5), database -> null, Integer.MAX_VALUE, 10_000);
     }
 
-    private Explorer(DataSource dataSource, Setup setup, Duration timeout, Observation observation, int limit) {
+    private Explorer(DataSource dataSource, Setup setup, Duration timeout, Observation observation, int preemptions,
+            int limit) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.setup = Objects.requireNonNull(setup, "setup");
         this.timeout = Objects.requireNonNull(timeout, "timeout");
         this.observation = Objects.requireNonNull(observation, "observation");
+        this.preemptions = preemptions;
         this.limit = limit;
     }
 
     /** Reads {@code observation} after every run and keeps it with the run. */
     public Explorer observing(Observation observation) {
-        return new Explorer(dataSource, setup, timeout, observation, limit);
+        return new Explorer(dataSource, setup, timeout, observation, preemptions, limit);
+    }
+
+    /** Runs only orders with at most {@code bound} preemptions. */
+    public Explorer withPreemptions(int bound) {
+        if (bound < 0) {
+            throw new IllegalArgumentException("the bound can't be negative, got " + bound);
+        }
+        return new Explorer(dataSource, setup, timeout, observation, bound, limit);
     }
 
     /** Stops after {@code runs} runs, and says the exploration is incomplete if any orders were left. */
@@ -63,12 +79,12 @@ public final class Explorer {
         if (runs < 1) {
             throw new IllegalArgumentException("the limit has to be at least one run, got " + runs);
         }
-        return new Explorer(dataSource, setup, timeout, observation, runs);
+        return new Explorer(dataSource, setup, timeout, observation, preemptions, runs);
     }
 
     /** The scheduler's timeout for each run. */
     public Explorer withTimeout(Duration timeout) {
-        return new Explorer(dataSource, setup, timeout, observation, limit);
+        return new Explorer(dataSource, setup, timeout, observation, preemptions, limit);
     }
 
     public Exploration explore(Transaction... transactions) throws SQLException {
@@ -115,9 +131,25 @@ public final class Explorer {
                 }
                 List<Integer> next = new ArrayList<>(recorder.taken.subList(0, i));
                 next.add(other);
-                pending.push(next);
+                if (preemptions(next, recorder.offered) <= preemptions) {
+                    pending.push(next);
+                }
             }
         }
+    }
+
+    /**
+     * How many times {@code order} switches away from a transaction that was still ready. The
+     * ready sets come from the run the order branched off, which took the same steps up to its end.
+     */
+    static int preemptions(List<Integer> order, List<Set<Integer>> offered) {
+        int count = 0;
+        for (int i = 1; i < order.size(); i++) {
+            if (!order.get(i).equals(order.get(i - 1)) && offered.get(i).contains(order.get(i - 1))) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
