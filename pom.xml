@@ -19,6 +19,9 @@
     <junit.version>6.1.3</junit.version>
     <assertj.version>3.27.7</assertj.version>
     <h2.version>2.5.252</h2.version>
+    <postgresql.version>42.7.13</postgresql.version>
+    <embedded-postgres.version>2.2.2</embedded-postgres.version>
+    <postgres-binaries.version>18.6.0</postgres-binaries.version>
 
     <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
     <maven-surefire-plugin.version>3.6.0</maven-surefire-plugin.version>
@@ -31,6 +34,15 @@
         <groupId>org.junit</groupId>
         <artifactId>junit-bom</artifactId>
         <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- embedded-postgres pulls in the binaries for common platforms; the BOM picks the
+           PostgreSQL version for all of them. -->
+      <dependency>
+        <groupId>io.zonky.test.postgres</groupId>
+        <artifactId>embedded-postgres-binaries-bom</artifactId>
+        <version>${postgres-binaries.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -53,6 +65,24 @@
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>
       <version>${h2.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>${postgresql.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.zonky.test</groupId>
+      <artifactId>embedded-postgres</artifactId>
+      <version>${embedded-postgres.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Not among the platforms embedded-postgres brings by default. -->
+    <dependency>
+      <groupId>io.zonky.test.postgres</groupId>
+      <artifactId>embedded-postgres-binaries-darwin-arm64v8</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

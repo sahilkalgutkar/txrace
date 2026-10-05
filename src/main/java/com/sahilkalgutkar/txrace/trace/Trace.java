@@ -14,8 +14,11 @@ import java.util.stream.Collectors;
  */
 public final class Trace {
 
-    /** One step and its outcome. The outcome is null until the driver answers. */
-    public record Event(int seq, Step step, Outcome outcome) {
+    /**
+     * One step and its outcome. The outcome is null until the driver answers. {@code waited} is
+     * set on a step that had to wait for a lock another transaction held.
+     */
+    public record Event(int seq, Step step, Outcome outcome, boolean waited) {
         public boolean running() {
             return outcome == null;
         }
@@ -25,7 +28,7 @@ public final class Trace {
 
     /** Records a step as sent and returns its sequence number, starting at 1. */
     public synchronized int begin(Step step) {
-        events.add(new Event(events.size() + 1, step, null));
+        events.add(new Event(events.size() + 1, step, null, false));
         return events.size();
     }
 
@@ -34,7 +37,18 @@ public final class Trace {
         if (!event.running()) {
             throw new IllegalStateException("step " + seq + " already ended");
         }
-        events.set(seq - 1, new Event(seq, event.step(), outcome));
+        events.set(seq - 1, new Event(seq, event.step(), outcome, event.waited()));
+    }
+
+    /** Marks the step a connection is running as waiting for a lock. */
+    public synchronized void markWaiting(int connection) {
+        for (int i = events.size() - 1; i >= 0; i--) {
+            Event event = events.get(i);
+            if (event.step().connection() == connection && event.running()) {
+                events.set(i, new Event(event.seq(), event.step(), null, true));
+                return;
+            }
+        }
     }
 
     /** A copy that later steps will not change. */
@@ -62,7 +76,11 @@ public final class Trace {
             if (!step.parameters().isEmpty()) {
                 out.append("  ").append(format(step.parameters()));
             }
-            out.append("  -> ").append(describe(event.outcome())).append('\n');
+            out.append("  -> ").append(describe(event.outcome()));
+            if (event.waited()) {
+                out.append(event.running() ? ", waiting for a lock" : " after waiting for a lock");
+            }
+            out.append('\n');
         }
         return out.toString();
     }

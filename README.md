@@ -75,9 +75,67 @@ than something to guess at, because a schedule that replays exactly is the
 whole point. Running every one of the 560 orders of three independent
 transactions puts each step exactly where its schedule said.
 
-One thing it cannot do yet is tell when a released step is waiting on a lock
-held by a transaction that is still parked. For now that step is reported
-once a timeout runs out, or H2's own lock timeout fails it first.
+### Steps that wait on a lock
+
+Release transaction 2's update while transaction 1 still holds the row, and the
+update cannot finish until transaction 1 commits, which it never will, because
+it is parked waiting for its turn. A scheduler that simply waited would hang.
+
+So when a released step does not finish promptly, I ask the database whether it
+is waiting on a lock, and whose: `pg_blocking_pids` on PostgreSQL,
+`INFORMATION_SCHEMA.SESSIONS` on H2, over a connection of its own. If it is,
+the step is marked and the schedule moves on. The step finishes later, during
+the holder's commit:
+
+```text
+  3  c1 t1  UPDATE account SET balance = ? WHERE id = ?  [130, 1]  -> updated 1
+  4  c2 t1  UPDATE account SET balance = ? WHERE id = ?  [150, 1]  -> updated 1 after waiting for a lock
+  5  c1 t1  COMMIT  -> done
+```
+
+The part that took care was keeping that deterministic. A lock released by one
+step lets a waiting step run on another thread, so after every step I wait for
+each waiting step to settle, finishing or being seen waiting again, before the
+next one goes. H2 can still name a holder for a moment after it has committed,
+so a wait only counts if the holder still has a transaction open.
+
+Each connection's session id is read before autocommit goes off. On
+PostgreSQL, asking with autocommit off would start the transaction, and under
+REPEATABLE READ that fixes its snapshot before the schedule says it should.
+
+The same schedule then behaves the way each database documents. Under
+PostgreSQL's READ COMMITTED, transaction 2's update overwrites transaction 1's
+once the lock is free, and the deposit is lost. Under REPEATABLE READ, the same
+update fails with `40001` instead.
+
+Deadlocks needed one more thing to stay repeatable. PostgreSQL checks a wait
+for a deadlock once, `deadlock_timeout` after it starts, and fails whichever
+wait finds the cycle. My first version moved on as soon as it saw a step
+waiting, so which transaction failed depended on how long the steps in
+between took. Now I watch every newly waiting step for `deadlock_timeout`
+before leaving it, so each earlier wait has had its check, and the wait that
+closes a cycle is always the one PostgreSQL fails. H2 decides when the wait
+starts and fails the youngest transaction in the cycle. When the youngest
+closes it, both fail the same one; when the oldest closes it, they disagree,
+and the tests pin down both. The price is that every lock wait on PostgreSQL
+costs `deadlock_timeout`, so a test database wants it set low; mine use 100ms.
+
+One step can free two waiting steps at once: a rollback that lets two inserts
+of the same key go, say. They race, and the database picks the order, so the
+same schedule could end two ways. The loser ends up waiting behind the
+winner, which is how I spot it, and I refuse the schedule rather than report
+whichever way it went. PostgreSQL queues a second waiter for a row behind the
+first, not behind the holder, so updates of one row still go in queue order
+there; H2 lets them race.
+
+A schedule that asks for a transaction that is still waiting is refused,
+unless every transaction still running is waiting, because that is a deadlock
+only the database can break. The watch takes one connection of its own, so a
+pool needs room for one more than the number of transactions.
+
+Any other database is never seen waiting, and a stuck step is reported once
+the scheduler's timeout runs out. So is any wait on H2 when the user is not an
+admin, because H2 shows other sessions only to admins.
 
 ### Known gaps
 
@@ -90,21 +148,26 @@ a failed batch keeps its per-row counts. These are still open:
 - Transaction control written as SQL (`COMMIT`, `SET AUTOCOMMIT`) instead of
   through the JDBC API, DDL that commits implicitly, and H2 committing inside
   `setTransactionIsolation` when it is called part-way through a transaction.
-- Errors in SQLState class 40. H2 rolls the whole transaction back and starts
-  a new one, while PostgreSQL keeps it open and aborted until you roll back.
-  I want real PostgreSQL in the tests before choosing how to count these.
+- Errors in SQLState class 40, outside the scheduler. H2 rolls the whole
+  transaction back and starts a new one, while PostgreSQL keeps it open and
+  aborted until you roll back, so code that carries on after one gets its
+  later steps counted in the wrong transaction. Under the scheduler a
+  transaction that throws is rolled back as a step, which counts it right on
+  both.
 - With pgjdbc and a fetch size set, `ResultSet.next()` fetches more rows from
   the server outside any step, and `SELECT ... FOR UPDATE` takes its row locks
-  as those rows arrive. That needs PostgreSQL in the tests too.
+  as those rows arrive.
 - `CallableStatement` parameters: named ones are not recorded, and OUT
   parameters shift the positions of the rest.
+- On H2, waits for a table lock rather than a row lock, which only DDL takes,
+  do not show in `INFORMATION_SCHEMA.SESSIONS`, so they run into the timeout.
 - Savepoints, and connections unwrapped to their driver class.
 
 ## Status
 
 - [x] JDBC proxy, gate and trace
 - [x] A scheduler that replays a given order of steps exactly
-- [ ] Noticing a statement that is waiting on another transaction's lock (Postgres and H2)
+- [x] Noticing a statement that is waiting on another transaction's lock (Postgres and H2)
 - [ ] Exploring orders, with a bound on preemptions
 - [ ] Comparing each order against every serial order, and printing the shortest failing one
 - [ ] The Hermitage anomaly cases as a test suite
@@ -113,8 +176,9 @@ a failed batch keeps its per-row counts. These are still open:
 
 ## Building
 
-Java 21 or newer. The Maven wrapper fetches Maven itself, and the tests use an
-in-process H2 database, so nothing else needs to be running.
+Java 21 or newer. The Maven wrapper fetches Maven itself. The tests run against
+an in-process H2 database and an embedded PostgreSQL 18, which starts from
+binaries in the build, so neither Docker nor a local install is needed.
 
 ```bash
 ./mvnw verify

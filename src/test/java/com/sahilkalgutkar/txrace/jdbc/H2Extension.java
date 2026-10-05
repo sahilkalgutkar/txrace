@@ -24,14 +24,16 @@ public final class H2Extension implements ParameterResolver, AfterEachCallback {
         return parameter.getParameter().getType() == DataSource.class;
     }
 
+    /** The same database for every parameter of one test, a @BeforeEach method's included. */
     @Override
     public Object resolveParameter(ParameterContext parameter, ExtensionContext context) {
-        JdbcDataSource database = new JdbcDataSource();
-        // DB_CLOSE_DELAY=-1 keeps the database alive between connections until SHUTDOWN.
-        database.setURL("jdbc:h2:mem:txrace" + NEXT.incrementAndGet() + ";DB_CLOSE_DELAY=-1");
-        database.setUser("sa");
-        context.getStore(NAMESPACE).put("database", database);
-        return database;
+        return context.getStore(NAMESPACE).computeIfAbsent("database", key -> {
+            JdbcDataSource database = new JdbcDataSource();
+            // DB_CLOSE_DELAY=-1 keeps the database alive between connections until SHUTDOWN.
+            database.setURL("jdbc:h2:mem:txrace" + NEXT.incrementAndGet() + ";DB_CLOSE_DELAY=-1");
+            database.setUser("sa");
+            return database;
+        }, DataSource.class);
     }
 
     @Override
