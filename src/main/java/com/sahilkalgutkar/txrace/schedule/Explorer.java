@@ -1,5 +1,6 @@
 package com.sahilkalgutkar.txrace.schedule;
 
+import java.io.Serial;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -95,15 +96,16 @@ public final class Explorer {
         Scheduler scheduler = new Scheduler(dataSource, timeout);
         List<Exploration.Explored> runs = new ArrayList<>();
         List<Exploration.Refused> refused = new ArrayList<>();
-        Deque<List<Integer>> pending = new ArrayDeque<>();
-        pending.push(List.of());
+        Deque<Branch> pending = new ArrayDeque<>();
+        pending.push(new Branch(List.of(), List.of()));
         while (!pending.isEmpty()) {
             if (runs.size() + refused.size() >= limit) {
                 return new Exploration(runs, refused, false);
             }
-            List<Integer> prefix = pending.pop();
+            Branch branch = pending.pop();
+            List<Integer> prefix = branch.prefix();
             setup.prepare(dataSource);
-            Recorder recorder = new Recorder(prefix);
+            Recorder recorder = new Recorder(prefix, branch.offered());
             try {
                 Run run = scheduler.run(recorder, transactions);
                 runs.add(new Exploration.Explored(run, observation.observe(dataSource)));
@@ -112,7 +114,9 @@ public final class Explorer {
                 if (!e.unrepeatable()) {
                     throw e;
                 }
-                refused.add(new Exploration.Refused(new Schedule(recorder.taken), e));
+                refused.add(new Exploration.Refused(new Schedule(recorder.taken), firstLine(e.getMessage())));
+            } catch (Diverged e) {
+                refused.add(new Exploration.Refused(new Schedule(recorder.taken), e.getMessage()));
             }
             branch(prefix, recorder, pending);
         }
@@ -123,7 +127,7 @@ public final class Explorer {
      * Queues every order that differs from the one just run at some step after its prefix. Earlier
      * steps were branched on by the runs that led here, so no order is queued twice.
      */
-    private void branch(List<Integer> prefix, Recorder recorder, Deque<List<Integer>> pending) {
+    private void branch(List<Integer> prefix, Recorder recorder, Deque<Branch> pending) {
         for (int i = prefix.size(); i < recorder.taken.size(); i++) {
             for (int other : recorder.offered.get(i)) {
                 if (other == recorder.taken.get(i)) {
@@ -132,11 +136,14 @@ public final class Explorer {
                 List<Integer> next = new ArrayList<>(recorder.taken.subList(0, i));
                 next.add(other);
                 if (preemptions(next, recorder.offered) <= preemptions) {
-                    pending.push(next);
+                    pending.push(new Branch(next, List.copyOf(recorder.offered.subList(0, i + 1))));
                 }
             }
         }
     }
+
+    /** An order still to run: its prefix, and what each step of it was offered when it was found. */
+    private record Branch(List<Integer> prefix, List<Set<Integer>> offered) {}
 
     /**
      * How many times {@code order} switches away from a transaction that was still ready. The
@@ -152,17 +159,34 @@ public final class Explorer {
         return count;
     }
 
+    private static String firstLine(String message) {
+        return message.lines().findFirst().orElse(message);
+    }
+
+    /** A replay that did not offer what the run it branched from was offered. */
+    private static final class Diverged extends RuntimeException {
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        Diverged(String message) {
+            super(message, null, false, false);
+        }
+    }
+
     /**
      * Picks each step: the prefix first, then whichever transaction took the last step if it is
      * still ready, otherwise the lowest-numbered ready one.
      */
     private static final class Recorder implements Chooser {
         private final List<Integer> prefix;
+        private final List<Set<Integer>> expected;
         private final List<Integer> taken = new ArrayList<>();
         private final List<Set<Integer>> offered = new ArrayList<>();
 
-        Recorder(List<Integer> prefix) {
+        /** {@code expected} holds what the run this one branched from was offered at each step. */
+        Recorder(List<Integer> prefix, List<Set<Integer>> expected) {
             this.prefix = prefix;
+            this.expected = expected;
         }
 
         @Override
@@ -172,9 +196,11 @@ public final class Explorer {
             int choice;
             if (position < prefix.size()) {
                 choice = prefix.get(position);
-                if (!ready.contains(choice)) {
-                    throw new IllegalStateException("replaying " + new Schedule(prefix) + ", transaction " + choice
-                            + " was not ready at position " + (position + 1) + ": the run did not repeat itself");
+                // Anything else would make the orders branched from here wrong, or unreachable.
+                if (!ready.equals(expected.get(position))) {
+                    throw new Diverged("replaying " + new Schedule(prefix) + ", position " + (position + 1)
+                            + " offered " + ready + " where the run it branched from was offered "
+                            + expected.get(position));
                 }
             } else {
                 int last = soFar.isEmpty() ? 0 : soFar.getLast();

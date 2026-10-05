@@ -11,7 +11,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -159,7 +163,7 @@ class ExplorerTest {
 
         assertThat(exploration.complete()).isTrue();
         assertThat(exploration.refused()).isNotEmpty()
-                .allSatisfy(refused -> assertThat(refused.reason().unrepeatable()).isTrue());
+                .allSatisfy(refused -> assertThat(refused.reason()).contains("cannot be replayed exactly"));
         assertThat(exploration.runs()).isNotEmpty().extracting(Exploration.Explored::state).containsOnly(211);
     }
 
@@ -172,6 +176,56 @@ class ExplorerTest {
 
         assertThat(exploration.runs()).extracting(e -> e.run().schedule().toString()).containsExactly(
                 "1 1 2 2 3 3", "1 1 2 3 3 2", "1 1 2 3 2 3", "1 1 3 3 2 2", "1 1 3 2 2 3", "1 1 3 2 3 2");
+    }
+
+    @Test
+    void aDeadlockClosedByAStepThatWasJustFreedEndsBeforeTheNextChoice() throws SQLException {
+        // When 1 commits, 3 gets account 1 and then waits for account 2, which 2 holds while it
+        // waits for account 3, which 3 holds. That deadlock has to be over before anyone is offered
+        // a next step, or what is offered depends on when the database noticed it.
+        Scheduler scheduler = new Scheduler(h2);
+        List<Integer> prefix = List.of(1, 2, 3, 3, 2, 1);
+        Set<List<Integer>> orders = new HashSet<>();
+        Set<Set<Integer>> offeredAfterThePrefix = new HashSet<>();
+
+        for (int i = 0; i < 15; i++) {
+            openAccounts(h2);
+            Run run = scheduler.run((taken, ready) -> {
+                if (taken.size() == prefix.size()) {
+                    offeredAfterThePrefix.add(ready);
+                }
+                return taken.size() < prefix.size() ? prefix.get(taken.size()) : Collections.min(ready);
+            }, List.of(
+                    LockWaitContract.update("UPDATE account SET balance = balance + 1 WHERE id = 1"),
+                    twoUpdates("UPDATE account SET balance = balance + 1 WHERE id = 2",
+                            "UPDATE account SET balance = balance + 1 WHERE id = 3"),
+                    twoUpdates("UPDATE account SET balance = balance + 1 WHERE id = 3",
+                            "UPDATE account SET balance = balance + 1 WHERE id IN (1, 2)"),
+                    reads(1, 1)));
+            orders.add(run.schedule().order());
+        }
+
+        assertThat(orders).hasSize(1);
+        assertThat(offeredAfterThePrefix).hasSize(1);
+    }
+
+    @Test
+    void aTransactionThatDoesNotRepeatItselfIsReportedRatherThanEndingTheSearch() throws SQLException {
+        AtomicInteger calls = new AtomicInteger();
+        Transaction fickle = connection -> reads(1, calls.incrementAndGet() % 2 == 0 ? 1 : 2).run(connection);
+
+        Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts).explore(fickle, reads(2, 1));
+
+        assertThat(exploration.complete()).isTrue();
+        assertThat(exploration.refused()).isNotEmpty()
+                .allSatisfy(refused -> assertThat(refused.reason()).contains("where the run it branched from was offered"));
+    }
+
+    static Transaction twoUpdates(String first, String second) {
+        return connection -> {
+            connection.createStatement().executeUpdate(first);
+            return connection.createStatement().executeUpdate(second);
+        };
     }
 
     @Test

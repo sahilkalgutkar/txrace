@@ -12,10 +12,12 @@ public record Exploration(List<Explored> runs, List<Refused> refused, boolean co
     public record Explored(Run run, Object state) {}
 
     /**
-     * An order the scheduler refused because the database, not the schedule, would have decided
-     * what came next. {@code schedule} holds the steps up to that point.
+     * An order that could not be run repeatably: the scheduler refused it because the database,
+     * not the schedule, would have decided what came next, or replaying its prefix did not offer
+     * the same transactions as the run it branched from. {@code schedule} holds the steps up to
+     * that point.
      */
-    public record Refused(Schedule schedule, ScheduleException reason) {}
+    public record Refused(Schedule schedule, String reason) {}
 
     public Exploration {
         runs = List.copyOf(runs);
