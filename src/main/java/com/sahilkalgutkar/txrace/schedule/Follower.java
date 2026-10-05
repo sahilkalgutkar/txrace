@@ -180,8 +180,10 @@ final class Follower {
      * <p>When one step frees two waiting steps at once, they race, and the database decides which
      * goes first. The loser ends up waiting behind the winner, which is how that shows: a step
      * still stuck, now behind a step freed in the same settle, and behind someone else before.
-     * PostgreSQL queues a second waiter for a row behind the first, not behind the holder, so
-     * there the order is the queue's and the run stays repeatable.
+     * This only sees the race when the step that was not in front wins. When the one in front
+     * wins, the run looks the same as one where the order was fixed, although the other ending was
+     * possible. PostgreSQL usually keeps updates of a row in line, but each re-reads the newest
+     * version of the row when the holder commits, and the one behind can get there first.
      */
     private void settle(String at) throws Stop, InterruptedException, SQLException {
         Map<Integer, Integer> before = new HashMap<>(behind);

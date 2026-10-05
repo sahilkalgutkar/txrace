@@ -45,14 +45,17 @@ class PostgresExplorerTest {
     }
 
     @Test
-    void updatesOfOneRowWaitInLineSoEveryOrderRuns() throws SQLException {
+    void updatesOfOneRowAllEndAtTheSameBalance() throws SQLException {
         Exploration exploration = explorer.observing(ExplorerTest::balance)
                 .explore(LockWaitContract.update("UPDATE account SET balance = balance + 1 WHERE id = 1"),
                         LockWaitContract.update("UPDATE account SET balance = balance + 10 WHERE id = 1"),
                         LockWaitContract.update("UPDATE account SET balance = balance + 100 WHERE id = 1"));
 
-        assertThat(exploration.refused()).isEmpty();
-        assertThat(exploration.runs()).isNotEmpty().extracting(Exploration.Explored::state).containsOnly(211);
+        // Usually nothing is refused, but now and then an update overtakes the one ahead of it.
+        assertThat(exploration.refused())
+                .allSatisfy(refused -> assertThat(refused.reason()).contains("cannot be replayed exactly"));
+        assertThat(exploration.runs()).hasSizeGreaterThan(20).extracting(Exploration.Explored::state)
+                .containsOnly(211);
     }
 
     @Test

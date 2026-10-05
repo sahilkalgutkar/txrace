@@ -124,9 +124,18 @@ One step can free two waiting steps at once: a rollback that lets two inserts
 of the same key go, say. They race, and the database picks the order, so the
 same schedule could end two ways. The loser ends up waiting behind the
 winner, which is how I spot it, and I refuse the schedule rather than report
-whichever way it went. PostgreSQL queues a second waiter for a row behind the
-first, not behind the holder, so updates of one row still go in queue order
-there; H2 lets them race.
+whichever way it went. H2 wakes every waiter for a row at once. PostgreSQL
+usually keeps them in line, but when the holder commits, each waiting update
+re-reads the newest version of the row, and the one behind can get there
+first. I only catch it when the one behind wins; when the one in front wins,
+the run looks repeatable even though it might have gone the other way.
+
+Waits can also start while the others settle: a step freed by a commit goes on
+to wait for another row. Those get the same time to decide on a deadlock as a
+step just released, or the deadlock would break at some later moment and what
+was ready next would depend on it. And if two waits that started together
+deadlock each other on PostgreSQL, their checks race to pick the victim, so I
+refuse that schedule too.
 
 A schedule that asks for a transaction that is still waiting is refused,
 unless every transaction still running is waiting, because that is a deadlock
@@ -175,8 +184,16 @@ the other's update waits and isn't ready.
 
 An order the scheduler refuses as unrepeatable is kept apart rather than
 failing the search. Three updates of one row give 30 orders on PostgreSQL, all
-ending at the same balance. H2 runs 24 of them and refuses 6, because there a
+ending at the same balance, though once in a while one is refused when an
+update overtakes the one ahead of it. H2 runs 24 and refuses 6, because there a
 commit frees both waiting updates at once.
+
+The search depends on every run of a prefix offering the same choices. Each
+queued order carries what its parent run was offered at every step, and a
+replay that is offered anything different is recorded as refused, rather than
+ending the search with everything found so far thrown away. On PostgreSQL each
+lock wait also costs `deadlock_timeout`, once per order it occurs in, so a
+search with many waits wants that set low.
 
 ### Known gaps
 
@@ -200,6 +217,8 @@ a failed batch keeps its per-row counts. These are still open:
   as those rows arrive.
 - `CallableStatement` parameters: named ones are not recorded, and OUT
   parameters shift the positions of the rest.
+- PostgreSQL letting a waiting update overtake the one in front goes unnoticed
+  when the one in front happens to win.
 - On H2, waits for a table lock rather than a row lock, which only DDL takes,
   do not show in `INFORMATION_SCHEMA.SESSIONS`, so they run into the timeout.
 - Savepoints, and connections unwrapped to their driver class.
