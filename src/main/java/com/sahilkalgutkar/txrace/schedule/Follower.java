@@ -5,6 +5,7 @@ import com.sahilkalgutkar.txrace.trace.Trace;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -92,7 +93,9 @@ final class Follower {
                 awaitDatabase();
                 continue;
             }
-            int n = chooser.next(List.copyOf(taken), Set.copyOf(ready));
+            // Sorted, because Set.copyOf iterates in an order that changes from one JVM to the next,
+            // and the explorer branches in the order it is handed.
+            int n = chooser.next(List.copyOf(taken), Collections.unmodifiableSortedSet(new TreeSet<>(ready)));
             if (!ready.contains(n)) {
                 throw new IllegalStateException("chose transaction " + n + ", which is not one of " + ready);
             }

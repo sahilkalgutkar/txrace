@@ -164,6 +164,17 @@ class ExplorerTest {
     }
 
     @Test
+    void exploresInTheSameOrderEveryTime() throws SQLException {
+        // The order matters once a limit cuts the search short, so it must not change between JVMs.
+        Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
+                .limitedTo(6)
+                .explore(reads(1, 1), reads(2, 1), reads(3, 1));
+
+        assertThat(exploration.runs()).extracting(e -> e.run().schedule().toString()).containsExactly(
+                "1 1 2 2 3 3", "1 1 2 3 3 2", "1 1 2 3 2 3", "1 1 3 3 2 2", "1 1 3 2 2 3", "1 1 3 2 3 2");
+    }
+
+    @Test
     void saysWhenItStoppedAtItsLimit() throws SQLException {
         Exploration exploration = new Explorer(h2, ExplorerTest::openAccounts)
                 .limitedTo(5)
