@@ -18,10 +18,12 @@ public final class ScheduleException extends RuntimeException {
 
     private final transient Trace trace;
     private final transient List<Result> results;
+    private final boolean unrepeatable;
 
-    ScheduleException(String reason, Trace trace, List<Result> results) {
+    ScheduleException(String reason, Trace trace, List<Result> results, boolean unrepeatable) {
         super(reason + "\n\nWhat ran:\n" + trace.render());
         this.trace = trace;
+        this.unrepeatable = unrepeatable;
         this.results = Collections.unmodifiableList(new ArrayList<>(results));
         // A transaction that threw is usually why the schedule stopped fitting, so its exception
         // travels with this one.
@@ -34,6 +36,14 @@ public final class ScheduleException extends RuntimeException {
 
     public Trace trace() {
         return trace;
+    }
+
+    /**
+     * True when the schedule was refused because the database, not the schedule, would have
+     * decided what happened next, so the same schedule could end more than one way.
+     */
+    public boolean unrepeatable() {
+        return unrepeatable;
     }
 
     /** How each transaction ended, or null for one that had not finished when the run stopped. */
