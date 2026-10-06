@@ -1,6 +1,7 @@
 package com.sahilkalgutkar.txrace.trace;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -23,6 +24,24 @@ class ColumnsTest {
                   2                            SELECT 1  -> rows
                   3  COMMIT  -> done
                 """);
+    }
+
+    @Test
+    void keepsSqlWrittenOverSeveralLinesInsideItsColumn() {
+        Trace trace = new Trace();
+        trace.end(trace.begin(Step.statement(2, 1, """
+                UPDATE account
+                	SET balance = balance + 1
+                 WHERE id = 1""", List.of())), new Outcome.Updated(1));
+
+        assertThat(Columns.render(trace, 2, 20)).isEqualTo("""
+                     transaction 1         transaction 2
+                  1                        UPDATE account SET
+                                           balance = balance +
+                                           1 WHERE id = 1  ->
+                                           updated 1
+                """);
+        assertThatThrownBy(() -> Columns.render(trace, 2, 0)).hasMessageContaining("at least one character");
     }
 
     @Test

@@ -11,6 +11,9 @@ public final class Columns {
 
     /** {@code connections} columns, each {@code width} characters wide. */
     public static String render(Trace trace, int connections, int width) {
+        if (width < 1) {
+            throw new IllegalArgumentException("a column has to be at least one character wide, got " + width);
+        }
         StringBuilder header = new StringBuilder("     ");
         for (int c = 1; c <= connections; c++) {
             header.append(pad("transaction " + c, width)).append("  ");
@@ -31,11 +34,15 @@ public final class Columns {
         return text.length() >= width ? text : text + " ".repeat(width - text.length());
     }
 
-    /** Breaks at spaces where it can, and inside a word only when the word is wider than the column. */
+    /**
+     * Breaks at spaces where it can, and inside a word only when the word is wider than the column.
+     * Newlines and tabs, from SQL written over several lines, count as spaces.
+     */
     static List<String> wrap(String text, int width) {
         List<String> lines = new ArrayList<>();
         StringBuilder line = new StringBuilder();
-        for (String word : text.split(" ")) {
+        String flat = text.strip().replaceAll("\\s*[\\r\\n]\\s*", " ").replace('\t', ' ');
+        for (String word : flat.split(" ")) {
             while (word.length() > width) {
                 if (!line.isEmpty()) {
                     lines.add(line.toString());
