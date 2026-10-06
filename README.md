@@ -230,11 +230,16 @@ Run one after another, they end with:
 
 There is no invariant to write. The serial orders are the reference, and an
 ending is what each committed transaction returned plus whatever the
-observation reads. The one rule that took thought is about rollbacks. A
-transaction the database rolled back left nothing behind, so I compare a run
-against serial runs of just the transactions that committed in it. That makes
-a refusal a correct ending rather than a finding, and it is what lets the
-checker tell isolation levels apart on PostgreSQL:
+observation reads. The one rule that took thought is about rollbacks, and I
+got it wrong first. A transaction the database refused, one that died on an
+`SQLException` such as a serialization failure or a deadlock, left nothing
+behind, so I compare the run against serial runs of just the others. That
+makes a refusal a correct ending rather than a finding. My first version
+excused every rollback, though, and a transaction that gives up because of
+what it read is exactly how a non-repeatable read can show. So a transaction
+that throws anything other than an `SQLException` is part of the ending, as
+having given up. The refusal rule is what lets the checker tell isolation
+levels apart on PostgreSQL:
 
 | Isolation level | Two read-then-write deposits | Two doctors going off call |
 |---|---|---|
@@ -249,6 +254,18 @@ before going off, each sees two in its own snapshot, and both go.
 serializability, which asks whether the steps could be reordered into a serial
 order. That stronger property would flag orders whose result is still fine,
 and a tool for finding bugs in application code cares about the result.
+
+A serial order the explorer runs again has to end the way it did the first
+time. If it doesn't, something in the endings changes on every run, a token or
+a timestamp, and the checker stops and says so rather than reporting every
+order. Arrays compare by what is in them. And the check only holds when every
+order ran and was judged: an order refused as unrepeatable, or one past a run
+limit, means it cannot be said.
+
+Sequences and identity columns need care. They move on even when a
+transaction rolls back, so an observation that includes a generated key sees
+the gap a refused transaction left, and the comparison fails. Leave generated
+keys out of what is observed and returned.
 
 Two knobs cover cases where the comparison is too strict. `ignoringReturnValues()`
 compares only which transactions committed and what was observed, for

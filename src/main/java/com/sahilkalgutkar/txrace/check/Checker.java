@@ -21,6 +21,10 @@ import java.util.stream.Stream;
  * that were not refused in it. That makes a refusal such as a serialization failure a correct
  * ending rather than a finding. A transaction that gave up by its own logic is not excused: see
  * {@link Ending}.
+ *
+ * <p>Sequences and identity columns move on even when a transaction rolls back, so a generated key
+ * in what is observed or returned shows the gap a refused transaction left, and the comparison
+ * fails. Leave them out.
  */
 public final class Checker {
 
