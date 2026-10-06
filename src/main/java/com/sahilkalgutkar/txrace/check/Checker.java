@@ -93,6 +93,18 @@ public final class Checker {
         Set<Ending> allowed = serial.stream().map(Verdict.Serial::ending).collect(Collectors.toSet());
 
         Exploration explored = explorer.explore(transactions);
+        // An order without preemptions is one of the serial orders run again, so it has to end the
+        // way it did then. If it does not, the endings hold something that changes on every run,
+        // and every order would be reported for it.
+        for (Exploration.Explored run : explored.runs()) {
+            Ending ending = judged(Ending.of(run, everyone));
+            if (run.preemptions() == 0 && !allowed.contains(ending)) {
+                throw new IllegalStateException("the serial order " + run.run().schedule() + " ended with "
+                        + ending.describe(returnValues) + " when it ran again, which no serial run did."
+                        + " Something in what the transactions return or what is observed changes on every run,"
+                        + " a token or a timestamp say: leave it out, or use ignoringReturnValues()");
+            }
+        }
         return new Verdict(count, serial, explored, order(explored.runs().stream()
                 .filter(run -> !allowed.contains(judged(Ending.of(run, everyone))))));
     }

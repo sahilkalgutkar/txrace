@@ -1,6 +1,7 @@
 package com.sahilkalgutkar.txrace.check;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sahilkalgutkar.txrace.jdbc.H2Extension;
 import com.sahilkalgutkar.txrace.schedule.Explorer;
@@ -9,6 +10,7 @@ import com.sahilkalgutkar.txrace.schedule.Transaction;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -61,8 +63,10 @@ class H2CheckerTest {
         Transaction first = withToken(Accounts.increment(30));
         Transaction second = withToken(Accounts.increment(50));
 
-        // A fresh token from each transaction makes every ending unlike every serial one.
-        assertThat(new Checker(explorer).check(first, second).holds()).isFalse();
+        // A fresh token from each transaction makes even a serial order end differently each time.
+        assertThatThrownBy(() -> new Checker(explorer).check(first, second))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("changes on every run, a token or a timestamp say");
         assertThat(new Checker(explorer).ignoringReturnValues().check(first, second).holds()).isTrue();
     }
 
@@ -71,6 +75,22 @@ class H2CheckerTest {
             transaction.run(connection);
             return UUID.randomUUID().toString();
         };
+    }
+
+    @Test
+    void comparesArraysByWhatIsInThem() throws SQLException {
+        Transaction batch = connection -> {
+            try (Statement statement = connection.createStatement()) {
+                statement.addBatch("UPDATE account SET balance = balance + 1 WHERE id = 1");
+                return statement.executeBatch();
+            }
+        };
+
+        Verdict verdict = new Checker(explorer).check(batch, batch);
+
+        assertThat(verdict.holds()).isTrue();
+        assertThat(Ending.canonical(new int[][] {{1}, {2, 3}})).isEqualTo(List.of(List.of(1), List.of(2, 3)));
+        assertThat(Ending.canonical(new byte[] {0x0a})).isEqualTo("0a");
     }
 
     @Test

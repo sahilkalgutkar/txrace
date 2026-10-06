@@ -2,9 +2,11 @@ package com.sahilkalgutkar.txrace.check;
 
 import com.sahilkalgutkar.txrace.schedule.Exploration;
 import com.sahilkalgutkar.txrace.schedule.Result;
+import java.lang.reflect.Array;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -25,8 +27,34 @@ import java.util.stream.Stream;
 public record Ending(SortedMap<Integer, Object> committed, SortedMap<Integer, String> aborted, Object state) {
 
     public Ending {
-        committed = Collections.unmodifiableSortedMap(new TreeMap<>(committed));
+        SortedMap<Integer, Object> values = new TreeMap<>();
+        committed.forEach((n, value) -> values.put(n, canonical(value)));
+        committed = Collections.unmodifiableSortedMap(values);
         aborted = Collections.unmodifiableSortedMap(new TreeMap<>(aborted));
+        state = canonical(state);
+    }
+
+    /**
+     * Arrays compare by identity, so two runs that returned the same int[] would never match.
+     * They are compared as lists instead, and bytes as hex, nested ones too.
+     */
+    static Object canonical(Object value) {
+        if (value instanceof byte[] bytes) {
+            return HexFormat.of().formatHex(bytes);
+        }
+        if (value != null && value.getClass().isArray()) {
+            List<Object> items = new ArrayList<>();
+            for (int i = 0; i < Array.getLength(value); i++) {
+                items.add(canonical(Array.get(value, i)));
+            }
+            return Collections.unmodifiableList(items);
+        }
+        if (value instanceof List<?> list) {
+            List<Object> items = new ArrayList<>();
+            list.forEach(item -> items.add(canonical(item)));
+            return Collections.unmodifiableList(items);
+        }
+        return value;
     }
 
     /** An ending where nothing gave up. */
