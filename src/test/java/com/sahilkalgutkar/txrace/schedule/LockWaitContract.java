@@ -104,6 +104,7 @@ abstract class LockWaitContract {
 
         assertThat(e).hasMessageStartingWith("position 5 of \"1 2 1 2 2 1\" asks for transaction 2, whose step is "
                 + "still waiting on a lock held by transaction 1");
+        assertThat(e.unrepeatable()).isFalse();
         assertThat(balance(1)).isEqualTo(100);
     }
 
@@ -154,6 +155,7 @@ abstract class LockWaitContract {
 
         assertThat(e).hasMessageStartingWith("the step at position 4 of \"1 2 3 1 2 3\" let transactions")
                 .hasMessageContaining("stop waiting at once, and the database chose which went first");
+        assertThat(e.unrepeatable()).isTrue();
     }
 
     @Test

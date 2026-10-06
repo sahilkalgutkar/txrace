@@ -1,6 +1,7 @@
 package com.sahilkalgutkar.txrace.schedule;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sahilkalgutkar.txrace.jdbc.H2Extension;
 import com.sahilkalgutkar.txrace.trace.Trace;
@@ -10,7 +11,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -155,6 +158,38 @@ class SchedulerTest {
                 rolledBack -> assertThat(rolledBack.cause()).hasMessage("changed my mind"));
         assertThat(run.trace().render()).endsWith("c1 t1  ROLLBACK  -> done\n");
         assertThat(balance(1)).isEqualTo(100);
+    }
+
+    @Test
+    void aRunCanPickItsStepsAsItGoes() throws SQLException {
+        Run picked = scheduler.run((taken, ready) -> Collections.min(ready), List.of(deposit(1, 30), deposit(2, 50)));
+
+        // Always the lowest ready transaction, so 1 runs to the end before 2 starts.
+        assertThat(picked.schedule()).isEqualTo(Schedule.parse("1 1 1 2 2 2"));
+        reset();
+        assertThat(scheduler.run(picked.schedule(), deposit(1, 30), deposit(2, 50)).trace().render())
+                .isEqualTo(picked.trace().render());
+    }
+
+    @Test
+    void theChooserIsOfferedEveryTransactionReadyForItsNextStep() throws SQLException {
+        List<Set<Integer>> offered = new ArrayList<>();
+
+        scheduler.run((taken, ready) -> {
+            offered.add(ready);
+            return Collections.max(ready);
+        }, List.of(deposit(1, 30), look(2)));
+
+        // 2 goes first and finishes after its two steps, then 1 takes its three alone.
+        assertThat(offered).containsExactly(
+                Set.of(1, 2), Set.of(1, 2), Set.of(1), Set.of(1), Set.of(1));
+    }
+
+    @Test
+    void refusesAChoiceOfATransactionThatIsNotReady() {
+        assertThatThrownBy(() -> scheduler.run((taken, ready) -> 7, List.of(deposit(1, 30))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("chose transaction 7, which is not one of [1]");
     }
 
     @Test

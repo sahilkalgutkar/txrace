@@ -56,15 +56,33 @@ public final class Scheduler {
     public Run run(Schedule schedule, List<Transaction> transactions) throws SQLException {
         // Checked before anything is opened or started, so a bad argument leaves nothing behind.
         Objects.requireNonNull(schedule, "schedule");
+        return run(follower -> {
+            follower.follow(schedule);
+            return schedule;
+        }, transactions);
+    }
+
+    /** Runs the transactions, letting {@code chooser} pick each step. The run's schedule is the one it picked. */
+    Run run(Chooser chooser, List<Transaction> transactions) throws SQLException {
+        Objects.requireNonNull(chooser, "chooser");
+        return run(follower -> new Schedule(follower.choose(chooser)), transactions);
+    }
+
+    /** How a run decides its steps: by following a schedule, or by choosing as it goes. */
+    private interface Plan {
+        Schedule carryOut(Follower follower) throws Stop, InterruptedException, SQLException;
+    }
+
+    private Run run(Plan plan, List<Transaction> transactions) throws SQLException {
         transactions.forEach(transaction -> Objects.requireNonNull(transaction, "transaction"));
         Turnstile turnstile = new Turnstile();
         TracingDataSource traced = new TracingDataSource(dataSource, turnstile);
         try (LockWatch watch = LockWatch.open(dataSource)) {
-            return run(schedule, transactions, turnstile, traced, watch);
+            return run(plan, transactions, turnstile, traced, watch);
         }
     }
 
-    private Run run(Schedule schedule, List<Transaction> transactions, Turnstile turnstile, TracingDataSource traced,
+    private Run run(Plan plan, List<Transaction> transactions, Turnstile turnstile, TracingDataSource traced,
             LockWatch watch) throws SQLException {
         int count = transactions.size();
         // Opened here and in order, so that connection n in the trace is transaction n.
@@ -85,11 +103,15 @@ public final class Scheduler {
         }
 
         String failure = null;
+        boolean unrepeatable = false;
         RuntimeException unexpected = null;
+        Schedule followed = null;
         try {
-            new Follower(schedule, count, turnstile, watch, traced.trace(), results, timeout, timeoutNanos).follow();
+            followed = plan.carryOut(new Follower(count, turnstile, watch, traced.trace(), results, timeout,
+                    timeoutNanos));
         } catch (Stop stop) {
             failure = stop.getMessage();
+            unrepeatable = stop.unrepeatable();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             failure = "interrupted while running the schedule";
@@ -111,9 +133,9 @@ public final class Scheduler {
         }
         if (failure != null) {
             // A copy, because a transaction the join gave up on may still add steps.
-            throw new ScheduleException(failure, traced.trace().copy(), Arrays.asList(results));
+            throw new ScheduleException(failure, traced.trace().copy(), Arrays.asList(results), unrepeatable);
         }
-        return new Run(schedule, traced.trace(), List.of(results));
+        return new Run(followed, traced.trace(), List.of(results));
     }
 
     private static List<Connection> open(TracingDataSource traced, LockWatch watch, int count) throws SQLException {
