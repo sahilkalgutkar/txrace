@@ -33,11 +33,13 @@ final class Accounts {
     static Transaction deposit(int amount) {
         return connection -> {
             int balance;
-            try (ResultSet rows = connection.createStatement().executeQuery("SELECT balance FROM account WHERE id = 1")) {
+            try (ResultSet rows = connection.createStatement()
+                    .executeQuery("SELECT balance FROM account WHERE id = 1")) {
                 rows.next();
                 balance = rows.getInt(1) + amount;
             }
-            try (PreparedStatement update = connection.prepareStatement("UPDATE account SET balance = ? WHERE id = 1")) {
+            try (PreparedStatement update = connection.prepareStatement(
+                    "UPDATE account SET balance = ? WHERE id = 1")) {
                 update.setInt(1, balance);
                 update.executeUpdate();
             }
