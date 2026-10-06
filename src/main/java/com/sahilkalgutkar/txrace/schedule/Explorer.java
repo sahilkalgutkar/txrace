@@ -108,7 +108,8 @@ public final class Explorer {
             Recorder recorder = new Recorder(prefix, branch.offered());
             try {
                 Run run = scheduler.run(recorder, transactions);
-                runs.add(new Exploration.Explored(run, observation.observe(dataSource)));
+                runs.add(new Exploration.Explored(run, observation.observe(dataSource),
+                        preemptions(recorder.taken, recorder.offered)));
             } catch (ScheduleException e) {
                 // An order the database decided rather than the schedule is a finding, not a failure.
                 if (!e.unrepeatable()) {
