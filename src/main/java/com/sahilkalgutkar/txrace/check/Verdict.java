@@ -45,17 +45,22 @@ public record Verdict(int transactions, List<Serial> serial, Exploration explore
         }
         out.append(".\n");
         if (violations.isEmpty()) {
-            out.append("Every order ended the way some serial order does.\n");
+            out.append(serial.isEmpty() ? "Every order kept the invariant.\n"
+                    : "Every order ended the way some serial order does.\n");
             return out.toString();
         }
         Exploration.Explored shortest = violations.getFirst();
         out.append(violations.size()).append(violations.size() == 1 ? " order ends" : " orders end")
-                .append(" in a way no serial order does. The one with the fewest preemptions (")
+                .append(serial.isEmpty() ? " breaking the invariant" : " in a way no serial order does")
+                .append(". The one with the fewest preemptions (")
                 .append(shortest.preemptions()).append(") is ").append(shortest.run().schedule()).append(":\n\n");
         out.append(Columns.render(shortest.run().trace(), transactions, WIDTH)).append('\n');
         out.append("It ended with ")
                 .append(Ending.of(shortest, IntStream.rangeClosed(1, transactions).boxed().toList()).describe())
-                .append(".\nRun one after another, they end with:\n");
+                .append(".\n");
+        if (!serial.isEmpty()) {
+            out.append("Run one after another, they end with:\n");
+        }
         for (Serial run : serial) {
             if (run.order().size() == transactions) {
                 out.append("  ").append(run.order().stream().map(String::valueOf).collect(Collectors.joining(" then ")))

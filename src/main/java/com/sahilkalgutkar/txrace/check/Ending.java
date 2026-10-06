@@ -33,6 +33,13 @@ public record Ending(SortedMap<Integer, Object> committed, Object state) {
         return new Ending(committed, explored.state());
     }
 
+    /** The same ending with what each transaction returned forgotten, keeping which ones committed. */
+    Ending withoutReturnValues() {
+        SortedMap<Integer, Object> which = new TreeMap<>();
+        committed.keySet().forEach(n -> which.put(n, null));
+        return new Ending(which, state);
+    }
+
     String describe() {
         String returned = committed.isEmpty() ? "nothing committed" : committed.entrySet().stream()
                 .map(entry -> "transaction " + entry.getKey() + " returned " + entry.getValue())

@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,6 +53,47 @@ class H2CheckerTest {
         assertThat(verdict.holds()).isTrue();
         assertThat(verdict.violations()).isEmpty();
         assertThat(verdict.report()).endsWith("Every order ended the way some serial order does.\n");
+    }
+
+    @Test
+    void canIgnoreReturnValuesThatDifferOnEveryRun() throws SQLException {
+        Transaction first = withToken(Accounts.increment(30));
+        Transaction second = withToken(Accounts.increment(50));
+
+        // A fresh token from each transaction makes every ending unlike every serial one.
+        assertThat(new Checker(explorer).check(first, second).holds()).isFalse();
+        assertThat(new Checker(explorer).ignoringReturnValues().check(first, second).holds()).isTrue();
+    }
+
+    private static Transaction withToken(Transaction transaction) {
+        return connection -> {
+            transaction.run(connection);
+            return UUID.randomUUID().toString();
+        };
+    }
+
+    @Test
+    void canJudgeByAnInvariantInsteadOfTheSerialOrders() throws SQLException {
+        // Each deposit returns its amount, so the balance has to be 100 plus what committed.
+        Invariant everyDepositCounts = ending -> ending.state().equals(100 + ending.committed().values().stream()
+                .mapToInt(amount -> (Integer) amount).sum());
+        Checker checker = new Checker(explorer).judgingBy(everyDepositCounts);
+
+        Verdict lost = checker.check(returning(30, Accounts.deposit(30)), returning(50, Accounts.deposit(50)));
+        Verdict kept = checker.check(returning(30, Accounts.increment(30)), returning(50, Accounts.increment(50)));
+
+        assertThat(lost.holds()).isFalse();
+        assertThat(lost.serial()).isEmpty();
+        assertThat(lost.report()).contains("orders end breaking the invariant");
+        assertThat(kept.holds()).isTrue();
+        assertThat(kept.report()).endsWith("Every order kept the invariant.\n");
+    }
+
+    private static Transaction returning(int amount, Transaction transaction) {
+        return connection -> {
+            transaction.run(connection);
+            return amount;
+        };
     }
 
     @Test

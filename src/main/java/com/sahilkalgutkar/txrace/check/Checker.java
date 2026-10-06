@@ -11,6 +11,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 /**
  * Checks that every order the transactions can run in ends the way some serial order would.
@@ -23,10 +24,39 @@ import java.util.stream.IntStream;
 public final class Checker {
 
     private final Explorer explorer;
+    private final boolean returnValues;
+    private final Invariant invariant;
 
     /** {@code explorer} sets the starting state, what is observed, and how far to search. */
     public Checker(Explorer explorer) {
+        this(explorer, true, null);
+    }
+
+    private Checker(Explorer explorer, boolean returnValues, Invariant invariant) {
         this.explorer = Objects.requireNonNull(explorer, "explorer");
+        this.returnValues = returnValues;
+        this.invariant = invariant;
+    }
+
+    /**
+     * Compares only which transactions committed and what was observed. For transactions that
+     * return something different on every run, such as a fresh token, which no serial run could
+     * match.
+     */
+    public Checker ignoringReturnValues() {
+        return new Checker(explorer, false, invariant);
+    }
+
+    /**
+     * Judges each ending by {@code invariant} instead of by the serial orders, which are then not
+     * run at all.
+     */
+    public Checker judgingBy(Invariant invariant) {
+        return new Checker(explorer, returnValues, Objects.requireNonNull(invariant, "invariant"));
+    }
+
+    private Ending judged(Ending ending) {
+        return returnValues ? ending : ending.withoutReturnValues();
     }
 
     public Verdict check(Transaction... transactions) throws SQLException {
@@ -35,6 +65,12 @@ public final class Checker {
 
     public Verdict check(List<Transaction> transactions) throws SQLException {
         int count = transactions.size();
+        List<Integer> everyone = IntStream.rangeClosed(1, count).boxed().toList();
+        if (invariant != null) {
+            Exploration explored = explorer.explore(transactions);
+            return new Verdict(count, List.of(), explored, order(explored.runs().stream()
+                    .filter(run -> !invariant.holds(judged(Ending.of(run, everyone))))));
+        }
         List<Verdict.Serial> serial = new ArrayList<>();
         // Every serial order of every set of transactions that could be the ones that commit,
         // the empty set included: 1 + 2 + 2 = 5 runs for two transactions, 16 for three.
@@ -50,19 +86,21 @@ public final class Checker {
             for (Exploration.Explored run : runs.runs()) {
                 List<Integer> order = run.run().schedule().order().stream().distinct()
                         .map(i -> numbers.get(i - 1)).toList();
-                serial.add(new Verdict.Serial(order, Ending.of(run, numbers)));
+                serial.add(new Verdict.Serial(order, judged(Ending.of(run, numbers))));
             }
         }
         Set<Ending> allowed = serial.stream().map(Verdict.Serial::ending).collect(Collectors.toSet());
-        List<Integer> everyone = IntStream.rangeClosed(1, count).boxed().toList();
 
         Exploration explored = explorer.explore(transactions);
-        List<Exploration.Explored> violations = explored.runs().stream()
-                .filter(run -> !allowed.contains(Ending.of(run, everyone)))
-                .sorted(Comparator.comparingInt(Exploration.Explored::preemptions)
+        return new Verdict(count, serial, explored, order(explored.runs().stream()
+                .filter(run -> !allowed.contains(judged(Ending.of(run, everyone))))));
+    }
+
+    /** Fewest preemptions first, then the shortest, then by schedule, so the report is the same every time. */
+    private static List<Exploration.Explored> order(Stream<Exploration.Explored> violations) {
+        return violations.sorted(Comparator.comparingInt(Exploration.Explored::preemptions)
                         .thenComparingInt(run -> run.run().schedule().size())
                         .thenComparing(run -> run.run().schedule().toString()))
                 .toList();
-        return new Verdict(count, serial, explored, violations);
     }
 }
