@@ -70,7 +70,7 @@ public final class Checker {
         if (invariant != null) {
             Exploration explored = explorer.explore(transactions);
             return new Verdict(count, List.of(), explored, order(explored.runs().stream()
-                    .filter(run -> !invariant.holds(judged(Ending.of(run, everyone))))));
+                    .filter(run -> !invariant.holds(judged(Ending.of(run, everyone))))), returnValues);
         }
         List<Verdict.Serial> serial = new ArrayList<>();
         // Every serial order of every set of transactions that could be the ones that commit,
@@ -87,10 +87,10 @@ public final class Checker {
             for (Exploration.Explored run : runs.runs()) {
                 List<Integer> order = run.run().schedule().order().stream().distinct()
                         .map(i -> numbers.get(i - 1)).toList();
-                serial.add(new Verdict.Serial(order, judged(Ending.of(run, numbers))));
+                serial.add(new Verdict.Serial(order, Ending.of(run, numbers)));
             }
         }
-        Set<Ending> allowed = serial.stream().map(Verdict.Serial::ending).collect(Collectors.toSet());
+        Set<Ending> allowed = serial.stream().map(run -> judged(run.ending())).collect(Collectors.toSet());
 
         Exploration explored = explorer.explore(transactions);
         // An order without preemptions is one of the serial orders run again, so it has to end the
@@ -106,7 +106,7 @@ public final class Checker {
             }
         }
         return new Verdict(count, serial, explored, order(explored.runs().stream()
-                .filter(run -> !allowed.contains(judged(Ending.of(run, everyone))))));
+                .filter(run -> !allowed.contains(judged(Ending.of(run, everyone))))), returnValues);
     }
 
     /** Fewest preemptions first, then the shortest, then by schedule, so the report is the same every time. */

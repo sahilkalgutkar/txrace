@@ -9,24 +9,35 @@ import java.util.stream.IntStream;
 
 /**
  * What a {@link Checker} found. {@code violations} are the orders that ended in a way no serial
- * order does, the one with the fewest preemptions first.
+ * order does, the one with the fewest preemptions first. {@code returnValues} is false when the
+ * check ignored what the transactions returned.
  */
 public record Verdict(int transactions, List<Serial> serial, Exploration explored,
-        List<Exploration.Explored> violations) {
+        List<Exploration.Explored> violations, boolean returnValues) {
 
     /** How running some of the transactions one after another, in {@code order}, ended. */
     public record Serial(List<Integer> order, Ending ending) {}
 
     private static final int WIDTH = 44;
 
+    private String refusedIn(List<Integer> finished) {
+        List<String> refused = IntStream.rangeClosed(1, transactions).filter(n -> !finished.contains(n))
+                .mapToObj(String::valueOf).toList();
+        return (refused.size() == 1 ? "transaction " : "transactions ") + String.join(" and ", refused);
+    }
+
     public Verdict {
         serial = List.copyOf(serial);
         violations = List.copyOf(violations);
     }
 
-    /** True when every order ran, and each ended the way some serial order does. */
+    /**
+     * True when every order ran and each ended the way some serial order does. An order refused
+     * as unrepeatable was never judged, and neither was anything past a limit, so either means
+     * this cannot be said.
+     */
     public boolean holds() {
-        return violations.isEmpty() && explored.complete();
+        return violations.isEmpty() && explored.complete() && explored.refused().isEmpty();
     }
 
     /** The failing order with the fewest preemptions. */
@@ -45,8 +56,9 @@ public record Verdict(int transactions, List<Serial> serial, Exploration explore
         }
         out.append(".\n");
         if (violations.isEmpty()) {
-            out.append(serial.isEmpty() ? "Every order kept the invariant.\n"
-                    : "Every order ended the way some serial order does.\n");
+            String kept = serial.isEmpty() ? "kept the invariant" : "ended the way some serial order does";
+            out.append(holds() ? "Every order " + kept + ".\n"
+                    : "Every order that ran " + kept + ", but not every order ran, so that is all this shows.\n");
             return out.toString();
         }
         Exploration.Explored shortest = violations.getFirst();
@@ -55,16 +67,24 @@ public record Verdict(int transactions, List<Serial> serial, Exploration explore
                 .append(". The one with the fewest preemptions (")
                 .append(shortest.preemptions()).append(") is ").append(shortest.run().schedule()).append(":\n\n");
         out.append(Columns.render(shortest.run().trace(), transactions, WIDTH)).append('\n');
-        out.append("It ended with ")
-                .append(Ending.of(shortest, IntStream.rangeClosed(1, transactions).boxed().toList()).describe(true))
-                .append(".\n");
-        if (!serial.isEmpty()) {
+        Ending ending = Ending.of(shortest, IntStream.rangeClosed(1, transactions).boxed().toList());
+        out.append("It ended with ").append(ending.describe(returnValues)).append(".\n");
+        if (serial.isEmpty()) {
+            return out.toString();
+        }
+        // It was compared with serial runs of the transactions the database did not refuse.
+        List<Integer> finished = ending.finished();
+        if (finished.size() == transactions) {
             out.append("Run one after another, they end with:\n");
+        } else {
+            out.append("The database refused ").append(refusedIn(finished))
+                    .append(", so it is compared with the rest run one after another:\n");
         }
         for (Serial run : serial) {
-            if (run.order().size() == transactions) {
-                out.append("  ").append(run.order().stream().map(String::valueOf).collect(Collectors.joining(" then ")))
-                        .append(": ").append(run.ending().describe(true)).append('\n');
+            if (run.order().stream().sorted().toList().equals(finished)) {
+                out.append("  ").append(run.order().isEmpty() ? "none of them"
+                                : run.order().stream().map(String::valueOf).collect(Collectors.joining(" then ")))
+                        .append(": ").append(run.ending().describe(returnValues)).append('\n');
             }
         }
         return out.toString();
