@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sahilkalgutkar.txrace.jdbc.H2Extension;
 import com.sahilkalgutkar.txrace.schedule.Explorer;
+import com.sahilkalgutkar.txrace.schedule.Result;
 import com.sahilkalgutkar.txrace.schedule.Transaction;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -97,7 +98,7 @@ class H2CheckerTest {
     }
 
     @Test
-    void comparesRunsWhereSomeRolledBackAgainstJustTheOnesThatCommitted() throws SQLException {
+    void aTransactionThatAlwaysGivesUpEndsTheSameWayInEveryOrder() throws SQLException {
         Transaction giveUp = connection -> {
             Accounts.increment(1000).run(connection);
             throw new IllegalStateException("over the limit");
@@ -105,9 +106,39 @@ class H2CheckerTest {
 
         Verdict verdict = new Checker(explorer).check(Accounts.increment(30), giveUp);
 
-        // The second always rolls back, so every order ends like the first alone.
         assertThat(verdict.holds()).isTrue();
         assertThat(verdict.serial()).extracting(Verdict.Serial::ending)
                 .contains(new Ending(new TreeMap<>(Map.of()), 100));
+    }
+
+    @Test
+    void givingUpOverWhatItReadIsAFinding() throws SQLException {
+        // Run one after another, the reader sees the same balance twice and commits. Interleaved,
+        // the increment can land between its reads, and it gives up.
+        Transaction reader = connection -> {
+            int first = (Integer) Accounts.read(connection);
+            if ((Integer) Accounts.read(connection) != first) {
+                throw new IllegalStateException("the balance changed under me");
+            }
+            return first;
+        };
+
+        Verdict verdict = new Checker(explorer).check(Accounts.increment(30), reader);
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.report()).contains("transaction 2 gave up with java.lang.IllegalStateException");
+    }
+
+    @Test
+    void aTransactionTheDatabaseRefusedIsComparedWithTheOthersAlone() throws SQLException {
+        // H2 refuses the second of two REPEATABLE READ deposits to change the row, so nothing is
+        // lost, and those orders end like the first deposit run on its own.
+        Verdict verdict = new Checker(explorer).check(
+                Accounts.at(Connection.TRANSACTION_REPEATABLE_READ, Accounts.deposit(30)),
+                Accounts.at(Connection.TRANSACTION_REPEATABLE_READ, Accounts.deposit(50)));
+
+        assertThat(verdict.holds()).isTrue();
+        assertThat(verdict.explored().runs()).anySatisfy(order -> assertThat(order.run().results())
+                .anySatisfy(result -> assertThat(result).isInstanceOf(Result.RolledBack.class)));
     }
 }

@@ -17,9 +17,10 @@ import java.util.stream.Stream;
  * Checks that every order the transactions can run in ends the way some serial order would.
  *
  * <p>No invariant is needed: the serial orders are the reference. A transaction the database
- * rolled back left nothing behind, so a run is compared against serial runs of just the
- * transactions that committed in it. That makes a refusal such as a serialization failure a
- * correct ending rather than a finding.
+ * refused left nothing behind, so a run is compared against serial runs of just the transactions
+ * that were not refused in it. That makes a refusal such as a serialization failure a correct
+ * ending rather than a finding. A transaction that gave up by its own logic is not excused: see
+ * {@link Ending}.
  */
 public final class Checker {
 

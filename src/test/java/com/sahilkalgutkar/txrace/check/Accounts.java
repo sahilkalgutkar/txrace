@@ -29,6 +29,13 @@ final class Accounts {
         }
     }
 
+    static Object read(Connection connection) throws SQLException {
+        try (ResultSet rows = connection.createStatement().executeQuery("SELECT balance FROM account WHERE id = 1")) {
+            rows.next();
+            return rows.getInt(1);
+        }
+    }
+
     /** Reads the balance, then writes back the balance plus {@code amount}, and returns what it wrote. */
     static Transaction deposit(int amount) {
         return connection -> {

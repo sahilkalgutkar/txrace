@@ -56,7 +56,7 @@ public record Verdict(int transactions, List<Serial> serial, Exploration explore
                 .append(shortest.preemptions()).append(") is ").append(shortest.run().schedule()).append(":\n\n");
         out.append(Columns.render(shortest.run().trace(), transactions, WIDTH)).append('\n');
         out.append("It ended with ")
-                .append(Ending.of(shortest, IntStream.rangeClosed(1, transactions).boxed().toList()).describe())
+                .append(Ending.of(shortest, IntStream.rangeClosed(1, transactions).boxed().toList()).describe(true))
                 .append(".\n");
         if (!serial.isEmpty()) {
             out.append("Run one after another, they end with:\n");
@@ -64,7 +64,7 @@ public record Verdict(int transactions, List<Serial> serial, Exploration explore
         for (Serial run : serial) {
             if (run.order().size() == transactions) {
                 out.append("  ").append(run.order().stream().map(String::valueOf).collect(Collectors.joining(" then ")))
-                        .append(": ").append(run.ending().describe()).append('\n');
+                        .append(": ").append(run.ending().describe(true)).append('\n');
             }
         }
         return out.toString();
