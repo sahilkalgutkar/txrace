@@ -195,6 +195,67 @@ ending the search with everything found so far thrown away. On PostgreSQL each
 lock wait also costs `deadlock_timeout`, once per order it occurs in, so a
 search with many waits wants that set low.
 
+## Checking against the serial orders
+
+`Checker` explores the orders and flags any that ends in a way running the
+transactions one after another never could:
+
+```java
+Verdict verdict = new Checker(new Explorer(dataSource, Accounts::open).observing(Accounts::balance))
+        .check(deposit(30), deposit(50));
+System.out.print(verdict.report());
+```
+
+```text
+2 transactions, 14 orders run.
+12 orders end in a way no serial order does. The one with the fewest preemptions (1) is 1 1 2 2 1 2:
+
+     transaction 1                                 transaction 2
+  1  SELECT balance FROM account WHERE id = 1  ->
+     rows
+  2  UPDATE account SET balance = ? WHERE id = 1
+     [130]  -> updated 1
+  3                                                SELECT balance FROM account WHERE id = 1  ->
+                                                   rows
+  4                                                UPDATE account SET balance = ? WHERE id = 1
+                                                   [150]  -> updated 1 after waiting for a lock
+  5  COMMIT  -> done
+  6                                                COMMIT  -> done
+
+It ended with transaction 1 returned 130, transaction 2 returned 150; observed 150.
+Run one after another, they end with:
+  1 then 2: transaction 1 returned 130, transaction 2 returned 180; observed 180
+  2 then 1: transaction 1 returned 180, transaction 2 returned 150; observed 180
+```
+
+There is no invariant to write. The serial orders are the reference, and an
+ending is what each committed transaction returned plus whatever the
+observation reads. The one rule that took thought is about rollbacks. A
+transaction the database rolled back left nothing behind, so I compare a run
+against serial runs of just the transactions that committed in it. That makes
+a refusal a correct ending rather than a finding, and it is what lets the
+checker tell isolation levels apart on PostgreSQL:
+
+| Isolation level | Two read-then-write deposits | Two doctors going off call |
+|---|---|---|
+| READ COMMITTED | fails: a deposit is lost | |
+| REPEATABLE READ | holds: the second writer gets `40001` | fails: nobody is left on call |
+| SERIALIZABLE | | holds: one of them gets `40001` |
+
+The doctors case is write skew. Each checks that two doctors are on call
+before going off, each sees two in its own snapshot, and both go.
+
+"Ends the way some serial order does" is weaker than conflict
+serializability, which asks whether the steps could be reordered into a serial
+order. That stronger property would flag orders whose result is still fine,
+and a tool for finding bugs in application code cares about the result.
+
+Two knobs cover cases where the comparison is too strict. `ignoringReturnValues()`
+compares only which transactions committed and what was observed, for
+transactions that return something new every run, like a token. And
+`judgingBy(invariant)` replaces the serial orders with a rule every ending must
+keep.
+
 ### Known gaps
 
 A review of this layer turned up places where work reaches the database
@@ -229,7 +290,7 @@ a failed batch keeps its per-row counts. These are still open:
 - [x] A scheduler that replays a given order of steps exactly
 - [x] Noticing a statement that is waiting on another transaction's lock (Postgres and H2)
 - [x] Exploring orders, with a bound on preemptions
-- [ ] Comparing each order against every serial order, and printing the shortest failing one
+- [x] Comparing each order against every serial order, and printing the shortest failing one
 - [ ] The Hermitage anomaly cases as a test suite
 - [ ] A real target
 - [ ] A JUnit extension, and a benchmark against plain stress testing
