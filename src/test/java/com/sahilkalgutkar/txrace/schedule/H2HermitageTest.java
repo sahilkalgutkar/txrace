@@ -1,0 +1,68 @@
+package com.sahilkalgutkar.txrace.schedule;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.sahilkalgutkar.txrace.check.Verdict;
+import com.sahilkalgutkar.txrace.jdbc.H2Extension;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.h2.engine.Constants;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+/**
+ * H2 has no row in Hermitage's table, so this one is what txrace measured, checked against H2's
+ * own documentation. It agrees: dirty reads only under READ UNCOMMITTED, and SERIALIZABLE, which
+ * the documentation calls partial because it "doesn't ensure equivalence of concurrent and
+ * serializable execution of transactions that perform write operations", lets write skew through
+ * like snapshot isolation does.
+ */
+@ExtendWith(H2Extension.class)
+class H2HermitageTest extends HermitageContract {
+
+    @Override
+    void prepare(Statement statement) throws SQLException {
+        statement.execute("SET DEFAULT_LOCK_TIMEOUT 10000");
+    }
+
+    @Override
+    List<Level> levels() {
+        return List.of(new Level("read uncommitted", Connection.TRANSACTION_READ_UNCOMMITTED),
+                new Level("read committed", Connection.TRANSACTION_READ_COMMITTED),
+                new Level("repeatable read", Connection.TRANSACTION_REPEATABLE_READ),
+                new Level("snapshot", Constants.TRANSACTION_SNAPSHOT),
+                new Level("serializable", Connection.TRANSACTION_SERIALIZABLE));
+    }
+
+    @Override
+    Map<String, List<String>> prevented() {
+        Map<String, List<String>> prevented = new LinkedHashMap<>();
+        prevented.put("read uncommitted", List.of("G0"));
+        prevented.put("read committed", List.of("G0", "G1a", "G1b", "G1c", "OTV"));
+        prevented.put("repeatable read", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
+        prevented.put("snapshot", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
+        prevented.put("serializable", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
+        return prevented;
+    }
+
+    /**
+     * READ COMMITTED prevents G1b and G1c, but both scenarios break serializability there in other
+     * ways: G1b with a non-repeatable read and G1c with write skew. So the checker flagging an
+     * order is not the same as it finding the anomaly.
+     */
+    @Test
+    void aViolationOnlyCountsWhenItShowsTheAnomaly() throws SQLException {
+        Level readCommitted = levels().get(1);
+        for (String anomaly : List.of("G1b", "G1c")) {
+            Hermitage.Scenario scenario = Hermitage.named(anomaly);
+            Verdict verdict = check(readCommitted, scenario);
+
+            assertThat(verdict.violations()).as(anomaly).isNotEmpty();
+            assertThat(shows(scenario, verdict)).as(anomaly).isFalse();
+        }
+    }
+}

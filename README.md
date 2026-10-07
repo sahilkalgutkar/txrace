@@ -273,6 +273,76 @@ transactions that return something new every run, like a token. And
 `judgingBy(invariant)` replaces the serial orders with a rule every ending must
 keep.
 
+## Hermitage
+
+Martin Kleppmann's [Hermitage](https://github.com/ept/hermitage) is the
+standard catalogue of isolation anomalies, with hand-run tests for each and a
+published table of which ones each database prevents. I wrote its tests as
+txrace scenarios: the same table, the same transactions, the interleavings
+from its PostgreSQL page, and a check for whether the anomaly showed. Each one
+runs through the scheduler at every level in Hermitage's PostgreSQL row and
+every level H2 has. Two things differ from postgres.md. The column is `val`,
+because `value` is reserved in H2. And the OTV reader selects the whole table
+each time, as Hermitage's MySQL test does, for a reason that comes up below.
+
+PostgreSQL reproduces Hermitage's table exactly (✓ prevented, — can occur):
+
+| Level | G0 | G1a | G1b | G1c | OTV | PMP | P4 | G-single | G2-item | G2 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| read committed | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | — |
+| repeatable read | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| serializable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Hermitage doesn't cover H2, so this one is new:
+
+| Level | G0 | G1a | G1b | G1c | OTV | PMP | P4 | G-single | G2-item | G2 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| read uncommitted | ✓ | — | — | — | — | — | — | — | — | — |
+| read committed | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | — |
+| repeatable read | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| snapshot | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| serializable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+
+It agrees with H2's own documentation, which calls its SERIALIZABLE partial
+because it "doesn't ensure equivalence of concurrent and serializable
+execution of transactions that perform write operations": write skew gets
+through, as under snapshot isolation. The documentation also says phantoms
+are possible under REPEATABLE READ, which Hermitage's PMP test doesn't show,
+though one test can't rule them out.
+
+My first version of this table had READ UNCOMMITTED preventing OTV, which
+would be odd for a level that shows uncommitted writes. postgres.md's reader
+takes one row per select, and by its first select the second writer has
+already put 12 in row 1, so the reader never gets to see a value that writer
+replaces. Read both rows at once, as Hermitage does for MySQL and SQL Server,
+and H2 shows 12 next to the first writer's 19: it has seen the second
+transaction, yet not all of it.
+
+The stronger check is the other direction. For every anomaly a level allows,
+the checker has to find an order no serial order explains on its own, without
+being shown Hermitage's interleaving, and that order has to show the anomaly
+itself. That second part matters: G1b's and G1c's transactions break
+serializability at READ COMMITTED too, with a non-repeatable read and with
+write skew, so a flagged order alone would have counted at a level that
+prevents both. This holds on H2 and PostgreSQL with a bound of two
+preemptions. And at a level that prevents them all, the checker has to judge
+every order and flag none. Only PostgreSQL's SERIALIZABLE qualifies, and it
+does.
+
+Getting there taught me something about what a result-based check can see. I
+first wrote the write skew scenario with each transaction counting the rows it
+read, and the checker found nothing: a count doesn't change when the other
+transaction writes, so both transactions end exactly as they would serially,
+even though their reads and writes form a cycle. Hermitage's version reads the
+values, and with that the checker finds it. An anomaly that changes nothing
+anyone observes is invisible to a check on outcomes, which is the price of not
+asking for conflict serializability.
+
+The plan was to label each counterexample with its Adya anomaly class, worked
+out from the dependency edges in the run. That needs to know which rows each
+statement read and wrote, and that isn't something a JDBC proxy can see without
+parsing SQL, so each scenario names its anomaly instead.
+
 ### Known gaps
 
 A review of this layer turned up places where work reaches the database
@@ -308,7 +378,7 @@ a failed batch keeps its per-row counts. These are still open:
 - [x] Noticing a statement that is waiting on another transaction's lock (Postgres and H2)
 - [x] Exploring orders, with a bound on preemptions
 - [x] Comparing each order against every serial order, and printing the shortest failing one
-- [ ] The Hermitage anomaly cases as a test suite
+- [x] The Hermitage anomaly cases as a test suite
 - [ ] A real target
 - [ ] A JUnit extension, and a benchmark against plain stress testing
 
