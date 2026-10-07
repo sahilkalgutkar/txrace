@@ -10,6 +10,7 @@ import java.sql.Statement;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.h2.engine.Constants;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -33,6 +34,7 @@ class H2HermitageTest extends HermitageContract {
         return List.of(new Level("read uncommitted", Connection.TRANSACTION_READ_UNCOMMITTED),
                 new Level("read committed", Connection.TRANSACTION_READ_COMMITTED),
                 new Level("repeatable read", Connection.TRANSACTION_REPEATABLE_READ),
+                new Level("snapshot", Constants.TRANSACTION_SNAPSHOT),
                 new Level("serializable", Connection.TRANSACTION_SERIALIZABLE));
     }
 
@@ -42,6 +44,7 @@ class H2HermitageTest extends HermitageContract {
         prevented.put("read uncommitted", List.of("G0"));
         prevented.put("read committed", List.of("G0", "G1a", "G1b", "G1c", "OTV"));
         prevented.put("repeatable read", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
+        prevented.put("snapshot", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
         prevented.put("serializable", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
         return prevented;
     }
