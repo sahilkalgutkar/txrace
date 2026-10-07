@@ -119,6 +119,7 @@ class ExplorerTest {
 
         assertThat(exploration.runs()).extracting(e -> e.run().schedule().toString()).containsExactlyInAnyOrder(
                 "1 1 2 2 3 3", "1 1 3 3 2 2", "2 2 1 1 3 3", "2 2 3 3 1 1", "3 3 1 1 2 2", "3 3 2 2 1 1");
+        assertThat(exploration.runs()).extracting(Exploration.Explored::preemptions).containsOnly(0);
     }
 
     @ParameterizedTest
@@ -133,6 +134,9 @@ class ExplorerTest {
                 .explore(reads(1, a - 1), reads(2, b - 1));
 
         assertThat(exploration.runs()).hasSize(a + b);
+        // The two serial orders have none; every other has exactly one.
+        assertThat(exploration.runs()).filteredOn(e -> e.preemptions() == 0).hasSize(2);
+        assertThat(exploration.runs()).extracting(Exploration.Explored::preemptions).containsOnly(0, 1);
         for (Exploration.Explored explored : exploration.runs()) {
             List<Integer> order = explored.run().schedule().order();
             assertThat(IntStream.range(1, order.size()).filter(i -> !order.get(i).equals(order.get(i - 1))))

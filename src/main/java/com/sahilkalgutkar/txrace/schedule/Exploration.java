@@ -8,8 +8,11 @@ import java.util.List;
  */
 public record Exploration(List<Explored> runs, List<Refused> refused, boolean complete) {
 
-    /** One order run to the end, with whatever was observed afterwards. */
-    public record Explored(Run run, Object state) {}
+    /**
+     * One order run to the end, with whatever was observed afterwards, and how many times it
+     * switched away from a transaction that could have gone on.
+     */
+    public record Explored(Run run, Object state, int preemptions) {}
 
     /**
      * An order that could not be run repeatably: the scheduler refused it because the database,

@@ -72,15 +72,21 @@ public final class Trace {
         for (Event event : events()) {
             Step step = event.step();
             out.append(String.format("%3d  c%d t%d  ", event.seq(), step.connection(), step.transaction()));
-            out.append(step.sql() == null ? step.kind().name() : step.sql());
-            if (!step.parameters().isEmpty()) {
-                out.append("  ").append(format(step.parameters()));
-            }
-            out.append("  -> ").append(describe(event.outcome()));
-            if (event.waited()) {
-                out.append(event.running() ? ", waiting for a lock" : " after waiting for a lock");
-            }
-            out.append('\n');
+            out.append(describe(event)).append('\n');
+        }
+        return out.toString();
+    }
+
+    /** One step on one line, without its position: what was sent, with what, and what came back. */
+    public static String describe(Event event) {
+        Step step = event.step();
+        StringBuilder out = new StringBuilder(step.sql() == null ? step.kind().name() : step.sql());
+        if (!step.parameters().isEmpty()) {
+            out.append("  ").append(format(step.parameters()));
+        }
+        out.append("  -> ").append(describe(event.outcome()));
+        if (event.waited()) {
+            out.append(event.running() ? ", waiting for a lock" : " after waiting for a lock");
         }
         return out.toString();
     }
