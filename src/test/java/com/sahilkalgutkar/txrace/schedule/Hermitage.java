@@ -108,15 +108,9 @@ final class Hermitage {
         };
     }
 
-    /** How many rows match {@code predicate}. */
-    static Sql count(String predicate) {
-        return connection -> {
-            try (ResultSet rows = connection.createStatement()
-                    .executeQuery("SELECT COUNT(*) FROM test WHERE " + predicate)) {
-                rows.next();
-                return rows.getInt(1);
-            }
-        };
+    /** Every value in the table, in id order: Hermitage's {@code select * from test}. */
+    static Sql all() {
+        return select("TRUE");
     }
 
     static Sql abort() {
@@ -129,6 +123,11 @@ final class Hermitage {
     @SuppressWarnings("unchecked")
     static List<Object> saw(Run run, int n) {
         return run.result(n) instanceof Result.Committed committed ? (List<Object>) committed.value() : null;
+    }
+
+    /** Whether any of the reads transaction n made, each a list of values, showed {@code value}. */
+    static boolean showed(Run run, int n, int value) {
+        return saw(run, n) != null && saw(run, n).stream().anyMatch(read -> ((List<?>) read).contains(value));
     }
 
     static boolean committed(Run run, int n) {
@@ -149,11 +148,11 @@ final class Hermitage {
                     // Both rows have to end up written by the same transaction.
                     (run, database) -> value(database, 1) - 10 != value(database, 2) - 20),
             new Scenario("G1a", "aborted reads", "1 2 1 2 2",
-                    List.of(transaction(update(1, 101), abort()), transaction(read(1), read(1))),
-                    (run, database) -> saw(run, 2) != null && saw(run, 2).contains(101)),
+                    List.of(transaction(update(1, 101), abort()), transaction(all(), all())),
+                    (run, database) -> showed(run, 2, 101)),
             new Scenario("G1b", "intermediate reads", "1 2 1 1 2 2",
-                    List.of(transaction(update(1, 101), update(1, 11)), transaction(read(1), read(1))),
-                    (run, database) -> saw(run, 2) != null && saw(run, 2).contains(101)),
+                    List.of(transaction(update(1, 101), update(1, 11)), transaction(all(), all())),
+                    (run, database) -> showed(run, 2, 101)),
             new Scenario("G1c", "circular information flow", "1 2 1 2 1 2",
                     List.of(transaction(update(1, 11), read(2)), transaction(update(2, 22), read(1))),
                     // Each saw the other's uncommitted write.
@@ -167,9 +166,9 @@ final class Hermitage {
                     (run, database) -> saw(run, 3) != null
                             && Objects.equals(saw(run, 3).get(2), 18) && Objects.equals(saw(run, 3).get(3), 11)),
             new Scenario("PMP", "predicate-many-preceders", "1 2 2 1 1",
-                    List.of(transaction(count("val = 30"), count("val % 3 = 0")), transaction(insert(3, 30))),
+                    List.of(transaction(select("val = 30"), select("val % 3 = 0")), transaction(insert(3, 30))),
                     // The first predicate found nothing, the second finds the row inserted in between.
-                    (run, database) -> saw(run, 1) != null && saw(run, 1).equals(List.of(0, 1))),
+                    (run, database) -> saw(run, 1) != null && saw(run, 1).equals(List.of(List.of(), List.of(30)))),
             new Scenario("P4", "lost update", "1 2 1 2 1 2",
                     List.of(transaction(read(1), update(1, 11)), transaction(read(1), update(1, 11))),
                     (run, database) -> committed(run, 1) && committed(run, 2)),
@@ -183,7 +182,7 @@ final class Hermitage {
                             transaction(select("id IN (1, 2)"), update(2, 21))),
                     (run, database) -> committed(run, 1) && committed(run, 2)),
             new Scenario("G2", "anti-dependency cycles", "1 2 1 2 1 2",
-                    List.of(transaction(count("val % 3 = 0"), insert(3, 30)),
-                            transaction(count("val % 3 = 0"), insert(4, 42))),
+                    List.of(transaction(select("val % 3 = 0"), insert(3, 30)),
+                            transaction(select("val % 3 = 0"), insert(4, 42))),
                     (run, database) -> committed(run, 1) && committed(run, 2)));
 }
