@@ -1,6 +1,7 @@
 package com.sahilkalgutkar.txrace.schedule;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import com.sahilkalgutkar.txrace.check.Checker;
 import com.sahilkalgutkar.txrace.check.Verdict;
@@ -139,16 +140,19 @@ abstract class HermitageContract {
         assertThat(missed).isEmpty();
     }
 
-    /** And at a level that prevents every anomaly, the checker must find nothing at all. */
+    /**
+     * And at a level that prevents every anomaly, the checker must find nothing at all, having
+     * judged every order. A database with no such level skips this rather than passing it.
+     */
     @Test
     void theCheckerPassesEveryScenarioAtALevelThatPreventsThemAll() throws SQLException {
+        List<Level> strictest = levels().stream()
+                .filter(level -> prevented().get(level.name()).size() == Hermitage.ALL.size()).toList();
+        assumeFalse(strictest.isEmpty(), "no level prevents every anomaly");
         List<String> flagged = new ArrayList<>();
-        for (Level level : levels()) {
-            if (prevented().get(level.name()).size() < Hermitage.ALL.size()) {
-                continue;
-            }
+        for (Level level : strictest) {
             for (Hermitage.Scenario scenario : Hermitage.ALL) {
-                if (!check(level, scenario).violations().isEmpty()) {
+                if (!check(level, scenario).holds()) {
                     flagged.add(scenario.anomaly() + " at " + level.name());
                 }
             }
