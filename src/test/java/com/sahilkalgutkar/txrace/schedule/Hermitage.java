@@ -12,8 +12,11 @@ import javax.sql.DataSource;
 /**
  * Martin Kleppmann's Hermitage tests (github.com/ept/hermitage) as txrace scenarios: the same
  * table, the same transactions, the same interleaving, and a check for whether the anomaly
- * happened. The interleavings are the ones in Hermitage's postgres.md. The one change is the
- * column name: Hermitage's {@code value} is a reserved word in H2, so here it is {@code val}.
+ * happened. The interleavings are the ones in Hermitage's postgres.md, with two changes. The
+ * column is {@code val}, because Hermitage's {@code value} is a reserved word in H2. And in OTV the
+ * third transaction reads the whole table each time, as in Hermitage's MySQL test: postgres.md
+ * reads a row at a time, and at READ UNCOMMITTED the anomaly only shows when both rows are read
+ * together, the second transaction's 12 next to the first one's 19.
  */
 final class Hermitage {
 
@@ -130,6 +133,28 @@ final class Hermitage {
         return saw(run, n) != null && saw(run, n).stream().anyMatch(read -> ((List<?>) read).contains(value));
     }
 
+    /**
+     * Observed transaction vanishes: having seen a write of whichever of the first two wrote last,
+     * the third sees a value that one overwrote, in the same read or a later one.
+     */
+    static boolean vanishes(Run run, DataSource database) throws SQLException {
+        if (!committed(run, 1) || !committed(run, 2) || saw(run, 3) == null) {
+            return false;
+        }
+        boolean secondWroteLast = value(database, 1) == 12;
+        List<Integer> last = secondWroteLast ? List.of(12, 18) : List.of(11, 19);
+        List<Integer> overwritten = secondWroteLast ? List.of(11, 19) : List.of(12, 18);
+        boolean seen = false;
+        for (Object read : saw(run, 3)) {
+            List<?> values = (List<?>) read;
+            seen |= values.get(0).equals(last.get(0)) || values.get(1).equals(last.get(1));
+            if (seen && (values.get(0).equals(overwritten.get(0)) || values.get(1).equals(overwritten.get(1)))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static boolean committed(Run run, int n) {
         return run.result(n) instanceof Result.Committed;
     }
@@ -161,10 +186,8 @@ final class Hermitage {
                             && Objects.equals(saw(run, 2).getFirst(), 11)),
             new Scenario("OTV", "observed transaction vanishes", "1 1 2 1 3 2 3 2 3 3 3",
                     List.of(transaction(update(1, 11), update(2, 19)), transaction(update(1, 12), update(2, 18)),
-                            transaction(read(1), read(2), read(2), read(1))),
-                    // Having seen 2's write to row 2, the third reads row 1 and finds 1's value instead.
-                    (run, database) -> saw(run, 3) != null
-                            && Objects.equals(saw(run, 3).get(2), 18) && Objects.equals(saw(run, 3).get(3), 11)),
+                            transaction(all(), all(), all(), all())),
+                    Hermitage::vanishes),
             new Scenario("PMP", "predicate-many-preceders", "1 2 2 1 1",
                     List.of(transaction(select("val = 30"), select("val % 3 = 0")), transaction(insert(3, 30))),
                     // The first predicate found nothing, the second finds the row inserted in between.

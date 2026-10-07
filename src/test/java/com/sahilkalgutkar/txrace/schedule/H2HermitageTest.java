@@ -35,7 +35,7 @@ class H2HermitageTest extends HermitageContract {
     @Override
     Map<String, List<String>> prevented() {
         Map<String, List<String>> prevented = new LinkedHashMap<>();
-        prevented.put("read uncommitted", List.of("G0", "OTV"));
+        prevented.put("read uncommitted", List.of("G0"));
         prevented.put("read committed", List.of("G0", "G1a", "G1b", "G1c", "OTV"));
         prevented.put("repeatable read", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
         prevented.put("serializable", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
