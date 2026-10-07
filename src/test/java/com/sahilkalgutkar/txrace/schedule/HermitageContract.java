@@ -2,7 +2,10 @@ package com.sahilkalgutkar.txrace.schedule;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.sahilkalgutkar.txrace.check.Checker;
+import com.sahilkalgutkar.txrace.check.Verdict;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -98,6 +101,65 @@ abstract class HermitageContract {
             Hermitage.ALL.forEach(scenario -> out.append(held.contains(scenario.anomaly()) ? " ✓ |" : " — |"));
         });
         return out.append('\n').toString();
+    }
+
+    /** Every row, so the checker sees whatever a run left behind. */
+    static Object rows(DataSource database) throws SQLException {
+        List<List<Integer>> rows = new ArrayList<>();
+        try (Connection connection = database.getConnection();
+             ResultSet result = connection.createStatement().executeQuery("SELECT id, val FROM test ORDER BY id")) {
+            while (result.next()) {
+                rows.add(List.of(result.getInt(1), result.getInt(2)));
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * For every anomaly a level allows, the checker has to find an order no serial order explains,
+     * on its own, without being given Hermitage's interleaving. Two preemptions are enough for all
+     * of these, and keep the search short.
+     */
+    @Test
+    void theCheckerFindsEveryAnomalyALevelAllowsWithoutBeingShownWhere() throws SQLException {
+        Map<String, List<String>> prevented = prevented();
+        List<String> missed = new ArrayList<>();
+        for (Level level : levels()) {
+            for (Hermitage.Scenario scenario : Hermitage.ALL) {
+                if (prevented.get(level.name()).contains(scenario.anomaly())) {
+                    continue;
+                }
+                Verdict verdict = new Checker(new Explorer(database, Hermitage::setUp)
+                        .observing(HermitageContract::rows).withPreemptions(2))
+                        .check(scenario.transactions().stream().map(t -> at(level.jdbc(), t)).toList());
+                if (verdict.violations().isEmpty()) {
+                    missed.add(scenario.anomaly() + " at " + level.name());
+                }
+            }
+        }
+
+        assertThat(missed).isEmpty();
+    }
+
+    /** And at a level that prevents every anomaly, the checker must find nothing at all. */
+    @Test
+    void theCheckerPassesEveryScenarioAtALevelThatPreventsThemAll() throws SQLException {
+        List<String> flagged = new ArrayList<>();
+        for (Level level : levels()) {
+            if (prevented().get(level.name()).size() < Hermitage.ALL.size()) {
+                continue;
+            }
+            for (Hermitage.Scenario scenario : Hermitage.ALL) {
+                Verdict verdict = new Checker(new Explorer(database, Hermitage::setUp)
+                        .observing(HermitageContract::rows).withPreemptions(2))
+                        .check(scenario.transactions().stream().map(t -> at(level.jdbc(), t)).toList());
+                if (!verdict.violations().isEmpty()) {
+                    flagged.add(scenario.anomaly() + " at " + level.name());
+                }
+            }
+        }
+
+        assertThat(flagged).isEmpty();
     }
 
     @Test

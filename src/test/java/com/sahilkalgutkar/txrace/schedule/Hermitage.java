@@ -94,6 +94,20 @@ final class Hermitage {
         };
     }
 
+    /** The values of the rows that match {@code predicate}, in id order. */
+    static Sql select(String predicate) {
+        return connection -> {
+            List<Integer> values = new ArrayList<>();
+            try (ResultSet rows = connection.createStatement()
+                    .executeQuery("SELECT val FROM test WHERE " + predicate + " ORDER BY id")) {
+                while (rows.next()) {
+                    values.add(rows.getInt(1));
+                }
+            }
+            return values;
+        };
+    }
+
     /** How many rows match {@code predicate}. */
     static Sql count(String predicate) {
         return connection -> {
@@ -165,8 +179,8 @@ final class Hermitage {
                     // The first saw row 1 before the second changed it and row 2 after.
                     (run, database) -> saw(run, 1) != null && saw(run, 1).equals(List.of(10, 18))),
             new Scenario("G2-item", "write skew", "1 2 1 2 1 2",
-                    List.of(transaction(count("id IN (1, 2)"), update(1, 11)),
-                            transaction(count("id IN (1, 2)"), update(2, 21))),
+                    List.of(transaction(select("id IN (1, 2)"), update(1, 11)),
+                            transaction(select("id IN (1, 2)"), update(2, 21))),
                     (run, database) -> committed(run, 1) && committed(run, 2)),
             new Scenario("G2", "anti-dependency cycles", "1 2 1 2 1 2",
                     List.of(transaction(count("val % 3 = 0"), insert(3, 30)),
