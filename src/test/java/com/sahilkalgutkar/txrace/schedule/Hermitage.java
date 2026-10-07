@@ -23,10 +23,10 @@ final class Hermitage {
     private Hermitage() {
     }
 
-    /** Whether the anomaly showed in a run, from what the transactions saw or what was left behind. */
+    /** Whether the anomaly showed in a run, from what the transactions saw or the rows it left behind. */
     @FunctionalInterface
     interface Detector {
-        boolean occurred(Run run, DataSource database) throws SQLException;
+        boolean occurred(Run run, List<List<Integer>> rows);
     }
 
     record Scenario(String anomaly, String name, String order, List<Transaction> transactions, Detector detector) {
@@ -137,11 +137,11 @@ final class Hermitage {
      * Observed transaction vanishes: having seen a write of whichever of the first two wrote last,
      * the third sees a value that one overwrote, in the same read or a later one.
      */
-    static boolean vanishes(Run run, DataSource database) throws SQLException {
+    static boolean vanishes(Run run, List<List<Integer>> rows) {
         if (!committed(run, 1) || !committed(run, 2) || saw(run, 3) == null) {
             return false;
         }
-        boolean secondWroteLast = value(database, 1) == 12;
+        boolean secondWroteLast = value(rows, 1) == 12;
         List<Integer> last = secondWroteLast ? List.of(12, 18) : List.of(11, 19);
         List<Integer> overwritten = secondWroteLast ? List.of(11, 19) : List.of(12, 18);
         boolean seen = false;
@@ -155,33 +155,50 @@ final class Hermitage {
         return false;
     }
 
+    /** Whether the first two both committed having seen {@code reads}, so neither saw the other's write. */
+    static boolean bothSaw(Run run, List<?> reads) {
+        return reads.equals(saw(run, 1)) && reads.equals(saw(run, 2));
+    }
+
     static boolean committed(Run run, int n) {
         return run.result(n) instanceof Result.Committed;
     }
 
-    static int value(DataSource database, int id) throws SQLException {
+    /** Every row as its id and value, in id order. */
+    static List<List<Integer>> rows(DataSource database) throws SQLException {
+        List<List<Integer>> rows = new ArrayList<>();
         try (Connection connection = database.getConnection();
-             ResultSet rows = connection.createStatement().executeQuery("SELECT val FROM test WHERE id = " + id)) {
-            rows.next();
-            return rows.getInt(1);
+             ResultSet result = connection.createStatement().executeQuery("SELECT id, val FROM test ORDER BY id")) {
+            while (result.next()) {
+                rows.add(List.of(result.getInt(1), result.getInt(2)));
+            }
         }
+        return rows;
+    }
+
+    static int value(List<List<Integer>> rows, int id) {
+        return rows.stream().filter(row -> row.get(0) == id).findFirst().orElseThrow().get(1);
+    }
+
+    static Scenario named(String anomaly) {
+        return ALL.stream().filter(scenario -> scenario.anomaly().equals(anomaly)).findFirst().orElseThrow();
     }
 
     static final List<Scenario> ALL = List.of(
             new Scenario("G0", "write cycles", "1 2 1 1 2 2",
                     List.of(transaction(update(1, 11), update(2, 21)), transaction(update(1, 12), update(2, 22))),
                     // Both rows have to end up written by the same transaction.
-                    (run, database) -> value(database, 1) - 10 != value(database, 2) - 20),
+                    (run, rows) -> value(rows, 1) - 10 != value(rows, 2) - 20),
             new Scenario("G1a", "aborted reads", "1 2 1 2 2",
                     List.of(transaction(update(1, 101), abort()), transaction(all(), all())),
-                    (run, database) -> showed(run, 2, 101)),
+                    (run, rows) -> showed(run, 2, 101)),
             new Scenario("G1b", "intermediate reads", "1 2 1 1 2 2",
                     List.of(transaction(update(1, 101), update(1, 11)), transaction(all(), all())),
-                    (run, database) -> showed(run, 2, 101)),
+                    (run, rows) -> showed(run, 2, 101)),
             new Scenario("G1c", "circular information flow", "1 2 1 2 1 2",
                     List.of(transaction(update(1, 11), read(2)), transaction(update(2, 22), read(1))),
                     // Each saw the other's uncommitted write.
-                    (run, database) -> saw(run, 1) != null && saw(run, 2) != null
+                    (run, rows) -> saw(run, 1) != null && saw(run, 2) != null
                             && Objects.equals(saw(run, 1).getFirst(), 22)
                             && Objects.equals(saw(run, 2).getFirst(), 11)),
             new Scenario("OTV", "observed transaction vanishes", "1 1 2 1 3 2 3 2 3 3 3",
@@ -191,21 +208,22 @@ final class Hermitage {
             new Scenario("PMP", "predicate-many-preceders", "1 2 2 1 1",
                     List.of(transaction(select("val = 30"), select("val % 3 = 0")), transaction(insert(3, 30))),
                     // The first predicate found nothing, the second finds the row inserted in between.
-                    (run, database) -> saw(run, 1) != null && saw(run, 1).equals(List.of(List.of(), List.of(30)))),
+                    (run, rows) -> saw(run, 1) != null && saw(run, 1).equals(List.of(List.of(), List.of(30)))),
             new Scenario("P4", "lost update", "1 2 1 2 1 2",
                     List.of(transaction(read(1), update(1, 11)), transaction(read(1), update(1, 11))),
-                    (run, database) -> committed(run, 1) && committed(run, 2)),
+                    // Both read 10 and both wrote, so one write was lost.
+                    (run, rows) -> bothSaw(run, List.of(10))),
             new Scenario("G-single", "read skew", "1 2 2 2 2 2 1 1",
                     List.of(transaction(read(1), read(2)),
                             transaction(read(1), read(2), update(1, 12), update(2, 18))),
                     // The first saw row 1 before the second changed it and row 2 after.
-                    (run, database) -> saw(run, 1) != null && saw(run, 1).equals(List.of(10, 18))),
+                    (run, rows) -> saw(run, 1) != null && saw(run, 1).equals(List.of(10, 18))),
             new Scenario("G2-item", "write skew", "1 2 1 2 1 2",
                     List.of(transaction(select("id IN (1, 2)"), update(1, 11)),
                             transaction(select("id IN (1, 2)"), update(2, 21))),
-                    (run, database) -> committed(run, 1) && committed(run, 2)),
+                    (run, rows) -> bothSaw(run, List.of(List.of(10, 20)))),
             new Scenario("G2", "anti-dependency cycles", "1 2 1 2 1 2",
                     List.of(transaction(select("val % 3 = 0"), insert(3, 30)),
                             transaction(select("val % 3 = 0"), insert(4, 42))),
-                    (run, database) -> committed(run, 1) && committed(run, 2)));
+                    (run, rows) -> bothSaw(run, List.of(List.of()))));
 }

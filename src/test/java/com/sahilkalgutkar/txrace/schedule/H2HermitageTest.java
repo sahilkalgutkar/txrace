@@ -1,5 +1,8 @@
 package com.sahilkalgutkar.txrace.schedule;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.sahilkalgutkar.txrace.check.Verdict;
 import com.sahilkalgutkar.txrace.jdbc.H2Extension;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -7,6 +10,7 @@ import java.sql.Statement;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
@@ -40,5 +44,22 @@ class H2HermitageTest extends HermitageContract {
         prevented.put("repeatable read", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
         prevented.put("serializable", List.of("G0", "G1a", "G1b", "G1c", "OTV", "PMP", "P4", "G-single"));
         return prevented;
+    }
+
+    /**
+     * READ COMMITTED prevents G1b and G1c, but both scenarios break serializability there in other
+     * ways: G1b with a non-repeatable read and G1c with write skew. So the checker flagging an
+     * order is not the same as it finding the anomaly.
+     */
+    @Test
+    void aViolationOnlyCountsWhenItShowsTheAnomaly() throws SQLException {
+        Level readCommitted = levels().get(1);
+        for (String anomaly : List.of("G1b", "G1c")) {
+            Hermitage.Scenario scenario = Hermitage.named(anomaly);
+            Verdict verdict = check(readCommitted, scenario);
+
+            assertThat(verdict.violations()).as(anomaly).isNotEmpty();
+            assertThat(shows(scenario, verdict)).as(anomaly).isFalse();
+        }
     }
 }

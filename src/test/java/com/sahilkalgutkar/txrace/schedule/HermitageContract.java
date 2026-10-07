@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.sahilkalgutkar.txrace.check.Checker;
 import com.sahilkalgutkar.txrace.check.Verdict;
 import java.sql.Connection;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -81,7 +80,7 @@ abstract class HermitageContract {
                 Hermitage.setUp(database);
                 Run run = scheduler.run(following(Schedule.parse(scenario.order())),
                         scenario.transactions().stream().map(t -> at(level.jdbc(), t)).toList());
-                if (!scenario.detector().occurred(run, database)) {
+                if (!scenario.detector().occurred(run, Hermitage.rows(database))) {
                     held.add(scenario.anomaly());
                 }
             }
@@ -103,22 +102,24 @@ abstract class HermitageContract {
         return out.append('\n').toString();
     }
 
-    /** Every row, so the checker sees whatever a run left behind. */
-    static Object rows(DataSource database) throws SQLException {
-        List<List<Integer>> rows = new ArrayList<>();
-        try (Connection connection = database.getConnection();
-             ResultSet result = connection.createStatement().executeQuery("SELECT id, val FROM test ORDER BY id")) {
-            while (result.next()) {
-                rows.add(List.of(result.getInt(1), result.getInt(2)));
-            }
-        }
-        return rows;
+    /** The checker's verdict on a scenario at a level, watching every row. */
+    Verdict check(Level level, Hermitage.Scenario scenario) throws SQLException {
+        return new Checker(new Explorer(database, Hermitage::setUp)
+                .observing(Hermitage::rows).withPreemptions(2))
+                .check(scenario.transactions().stream().map(t -> at(level.jdbc(), t)).toList());
+    }
+
+    /** Whether one of the orders the checker flagged shows the scenario's anomaly. */
+    @SuppressWarnings("unchecked")
+    static boolean shows(Hermitage.Scenario scenario, Verdict verdict) {
+        return verdict.violations().stream()
+                .anyMatch(order -> scenario.detector().occurred(order.run(), (List<List<Integer>>) order.state()));
     }
 
     /**
      * For every anomaly a level allows, the checker has to find an order no serial order explains,
-     * on its own, without being given Hermitage's interleaving. Two preemptions are enough for all
-     * of these, and keep the search short.
+     * on its own, without being given Hermitage's interleaving, and the anomaly has to show in that
+     * order. Two preemptions are enough for all of these, and keep the search short.
      */
     @Test
     void theCheckerFindsEveryAnomalyALevelAllowsWithoutBeingShownWhere() throws SQLException {
@@ -129,10 +130,7 @@ abstract class HermitageContract {
                 if (prevented.get(level.name()).contains(scenario.anomaly())) {
                     continue;
                 }
-                Verdict verdict = new Checker(new Explorer(database, Hermitage::setUp)
-                        .observing(HermitageContract::rows).withPreemptions(2))
-                        .check(scenario.transactions().stream().map(t -> at(level.jdbc(), t)).toList());
-                if (verdict.violations().isEmpty()) {
+                if (!shows(scenario, check(level, scenario))) {
                     missed.add(scenario.anomaly() + " at " + level.name());
                 }
             }
@@ -150,10 +148,7 @@ abstract class HermitageContract {
                 continue;
             }
             for (Hermitage.Scenario scenario : Hermitage.ALL) {
-                Verdict verdict = new Checker(new Explorer(database, Hermitage::setUp)
-                        .observing(HermitageContract::rows).withPreemptions(2))
-                        .check(scenario.transactions().stream().map(t -> at(level.jdbc(), t)).toList());
-                if (!verdict.violations().isEmpty()) {
+                if (!check(level, scenario).violations().isEmpty()) {
                     flagged.add(scenario.anomaly() + " at " + level.name());
                 }
             }
