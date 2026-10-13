@@ -382,9 +382,10 @@ reading the token in between and passing the same check.
 
 To test that without guessing at what the code sends, I turned on Hibernate's
 SQL log, ran one real refresh, and replayed those statements in txrace with the
-same text and in the same order. The checker ran 40 orders, and 38 of them end
-in a way no serial order can. The one with the fewest preemptions, abridged here
-to the first words of each statement:
+same text and in the same order. Of the 40 orders with at most two preemptions,
+38 end in a way no serial order can, and without a bound it is 180 of 182. The
+one with the fewest preemptions, abridged here to the first words of each
+statement:
 
 ```text
      transaction 1                          transaction 2
@@ -408,10 +409,12 @@ to prevent. Run one after the other, the second refresh is rejected as a replay.
 Authorization codes had the same race one step earlier in the flow.
 
 The fix consumes the token with `UPDATE … WHERE consumed_at IS NULL` right after
-the check, and treats an update that changed nothing as a replay. All 24 orders
-of the fixed version pass. REPEATABLE READ would also have refused the second
-refresh, which the zoo checks too, but the conditional update fixes it without
-changing the isolation level.
+the check, and treats an update that changed nothing as a replay. All 24
+orders of the fixed version with at most two preemptions pass, and so do all 36
+without a bound. REPEATABLE READ would also have refused the second refresh,
+which the zoo checks too, but as a serialization failure rather than a detected
+replay, and the conditional update fixes it without changing the isolation
+level.
 
 The fix had a trap of its own, and txrace shows it as well. The refresh that
 loses the conditional update waits for the winner, changes nothing, and still
@@ -426,22 +429,38 @@ revocation, and it has to wait for the loser's rollback:
   4  c2 t1  update refresh_tokens rte1_0 set consumed_at=? where … consumed_at is null …  -> updated 0 after waiting for a lock
   …
   7  c1 t1  COMMIT  -> done
-  8  c3 t1  select … where … token_hash=?  -> rows
-  9  c3 t1  update refresh_tokens set … revoked_at=? … where id=?  -> updated 1 after waiting for a lock
- 10  c2 t1  ROLLBACK  -> done
+  8  c3 t1  update refresh_tokens rte1_0 set revoked_at=? where rte1_0.family_id=? …  -> updated 2 after waiting for a lock
+  9  c2 t1  ROLLBACK  -> done
+ 10  c3 t1  update refresh_tokens rte1_0 set revoked_at=? where rte1_0.family_id=? …  -> updated 0
  11  c3 t1  COMMIT  -> done
 ```
 
 So trust-platform now revokes the family after the losing grant has rolled back.
-The specimens are [`RefreshTokenReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/RefreshTokenReuse.java)
-and [`CodeReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/CodeReuse.java).
+
+Reviewing that fix, I modelled the revocation as well, and it had the same race
+from the other side. It read the family's tokens and saved each one revoked.
+Racing a refresh of the family's live token, it read the family after the
+refresh had consumed the token and before the refresh's new token was
+committed, so the new token stayed live in a revoked family, and the save wrote
+the consumed token back as it had been read, unconsumed. Revoking with one
+`UPDATE … WHERE family_id = ?` isn't enough either: the update waits for the
+refresh's lock, but its snapshot was taken before the new token existed. The
+revocation now repeats that update until it revokes nothing, which is the
+second pass in the trace above. With one pass, the checker still finds an order
+that leaves a live token.
+
+The specimens are [`RefreshTokenReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/RefreshTokenReuse.java),
+[`CodeReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/CodeReuse.java) and
+[`FamilyRevocation`](src/test/java/com/sahilkalgutkar/txrace/zoo/FamilyRevocation.java).
 
 ## A zoo of racy methods
 
-The trust-platform race is one of five specimens, each kept next to its fix and
-run on PostgreSQL at its default, READ COMMITTED. The checker has to catch every
-bug and pass every fix having judged every order, with a bound of two
-preemptions:
+The trust-platform races are three of six specimens, each kept next to its fix
+and run on PostgreSQL at its default, READ COMMITTED. The checker has to catch
+every bug, and pass every fix having judged every order with at most two
+preemptions. A passing fix also has to show that its transactions did their
+work: the checker excuses a transaction the database refused, so a fix whose
+statements always failed would otherwise pass as a serial run of nothing.
 
 | Specimen | The code | What goes wrong | The fix |
 |---|---|---|---|
@@ -450,6 +469,7 @@ preemptions:
 | [`LastOwner`](src/test/java/com/sahilkalgutkar/txrace/zoo/LastOwner.java) | count the owners, leave if there are two | both leave, and the team has no owner | lock the team's row before counting |
 | [`RefreshTokenReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/RefreshTokenReuse.java) | trust-platform's refresh grant | two live tokens in one family | a conditional update, with zero rows meaning a replay |
 | [`CodeReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/CodeReuse.java) | trust-platform's code grant | one code, two sets of tokens | the same |
+| [`FamilyRevocation`](src/test/java/com/sahilkalgutkar/txrace/zoo/FamilyRevocation.java) | trust-platform revoking a family, racing a refresh | the refresh's new token stays live | revoke with an update repeated until it finds nothing |
 
 The overdraft is the one people get wrong after fixing the lost update: a
 relative update keeps both payments, but the check was made on a balance the
