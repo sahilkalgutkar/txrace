@@ -23,7 +23,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ExtendWith(PostgresExtension.class)
 class PostgresZooTest {
 
-    private static final List<Specimen> ZOO = List.of(new Overdraft());
+    private static final List<Specimen> ZOO = List.of(new Overdraft(), new DuplicateSignup());
 
     private DataSource postgres;
 
@@ -58,5 +58,19 @@ class PostgresZooTest {
     @Test
     void checkingInTheUpdateDeclinesTheSecondPayment() throws SQLException {
         assertThat(check(new Overdraft(), new Overdraft().fixed()).holds()).isTrue();
+    }
+
+    @Test
+    void bothSignupsFindTheAddressFreeAndItEndsUpWithTwoAccounts() throws SQLException {
+        Verdict verdict = check(new DuplicateSignup(), new DuplicateSignup().buggy());
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order ->
+                assertThat(order.state()).isEqualTo(List.of("ada@example.com ada", "ada@example.com eve")));
+    }
+
+    @Test
+    void lettingTheConstraintDecideTellsTheSecondSignupItIsTaken() throws SQLException {
+        assertThat(check(new DuplicateSignup(), new DuplicateSignup().fixed()).holds()).isTrue();
     }
 }
