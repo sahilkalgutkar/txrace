@@ -7,6 +7,7 @@ import com.sahilkalgutkar.txrace.check.Verdict;
 import com.sahilkalgutkar.txrace.jdbc.PostgresExtension;
 import com.sahilkalgutkar.txrace.schedule.Explorer;
 import com.sahilkalgutkar.txrace.schedule.Result;
+import com.sahilkalgutkar.txrace.schedule.Transaction;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ExtendWith(PostgresExtension.class)
 class PostgresZooTest {
 
-    private static final List<Specimen> ZOO = List.of(new Overdraft(), new DuplicateSignup());
+    private static final List<Specimen> ZOO = List.of(new Overdraft(), new DuplicateSignup(), new LastOwner());
 
     private DataSource postgres;
 
@@ -37,6 +38,13 @@ class PostgresZooTest {
                 specimen.create(statement);
             }
         }
+    }
+
+    private static Specimen.Twin at(int isolation, Specimen.Twin twin) {
+        return new Specimen.Twin(twin.reset(), twin.transactions().stream().<Transaction>map(transaction -> connection -> {
+            connection.setTransactionIsolation(isolation);
+            return transaction.run(connection);
+        }).toList());
     }
 
     private Verdict check(Specimen specimen, Specimen.Twin twin) throws SQLException {
@@ -72,5 +80,34 @@ class PostgresZooTest {
     @Test
     void lettingTheConstraintDecideTellsTheSecondSignupItIsTaken() throws SQLException {
         assertThat(check(new DuplicateSignup(), new DuplicateSignup().fixed()).holds()).isTrue();
+    }
+
+    @Test
+    void bothOwnersCountTwoAndTheTeamIsLeftWithNone() throws SQLException {
+        Verdict verdict = check(new LastOwner(), new LastOwner().buggy());
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order -> {
+            assertThat(order.state()).isEqualTo(List.of());
+            assertThat(order.run().results()).containsOnly(new Result.Committed("left"));
+        });
+    }
+
+    @Test
+    void lockingTheTeamFirstMakesTheSecondOwnerCountAgain() throws SQLException {
+        assertThat(check(new LastOwner(), new LastOwner().fixed()).holds()).isTrue();
+    }
+
+    /**
+     * The same fix fails one level up. REPEATABLE READ takes the snapshot when the first
+     * statement starts, and the second owner's first statement is the lock it waits on, so its
+     * snapshot is from before the first owner left.
+     */
+    @Test
+    void lockingTheTeamIsNotEnoughUnderRepeatableRead() throws SQLException {
+        Verdict verdict = check(new LastOwner(), at(Connection.TRANSACTION_REPEATABLE_READ, new LastOwner().fixed()));
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order -> assertThat(order.state()).isEqualTo(List.of()));
     }
 }
