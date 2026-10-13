@@ -371,6 +371,97 @@ a failed batch keeps its per-row counts. These are still open:
   do not show in `INFORMATION_SCHEMA.SESSIONS`, so they run into the timeout.
 - Savepoints, and connections unwrapped to their driver class.
 
+## The bug I went looking for
+
+I built txrace with one suspect in mind. My
+[trust-platform](https://github.com/sahilkalgutkar/trust-platform) is an OAuth
+provider, and its refresh grant reads the token, rejects it if it has been
+consumed, issues a new one, and lets Hibernate write the consumption when the
+transaction commits. Under READ COMMITTED, nothing stops a second refresh from
+reading the token in between and passing the same check.
+
+To test that without guessing at what the code sends, I turned on Hibernate's
+SQL log, ran one real refresh, and replayed those statements in txrace with the
+same text and in the same order. The checker ran 40 orders, and 38 of them end
+in a way no serial order can. The one with the fewest preemptions, abridged here
+to the first words of each statement:
+
+```text
+     transaction 1                          transaction 2
+  1  select … where … token_hash=?  -> rows
+  2  select … where rte1_0.id=?  -> rows
+  3  insert into refresh_tokens …  -> updated 1
+  4  update refresh_tokens set …  -> updated 1
+  5                                         select … where … token_hash=?  -> rows
+  6                                         select … where rte1_0.id=?  -> rows
+  7                                         insert into refresh_tokens …  -> updated 1
+  8                                         update refresh_tokens set …  -> updated 1 after waiting for a lock
+  9  COMMIT  -> done
+ 10                                         COMMIT  -> done
+```
+
+The first refresh has done everything but commit when the second reads the
+token, so the second still sees it unused. Its update waits for the first one's
+lock and goes through the moment the first commits. Both return a new token, and
+the family ends up with two live ones, which is the state reuse detection exists
+to prevent. Run one after the other, the second refresh is rejected as a replay.
+Authorization codes had the same race one step earlier in the flow.
+
+The fix consumes the token with `UPDATE … WHERE consumed_at IS NULL` right after
+the check, and treats an update that changed nothing as a replay. All 24 orders
+of the fixed version pass. REPEATABLE READ would also have refused the second
+refresh, which the zoo checks too, but the conditional update fixes it without
+changing the isolation level.
+
+The fix had a trap of its own, and txrace shows it as well. The refresh that
+loses the conditional update waits for the winner, changes nothing, and still
+holds the row's lock until its transaction ends. trust-platform revokes a
+replayed token's family in a separate transaction, and that revocation updates
+the same row. Started from inside the losing request, it would wait for a lock
+its own request holds, forever. In this run, the third transaction is the
+revocation, and it has to wait for the loser's rollback:
+
+```text
+  3  c1 t1  update refresh_tokens rte1_0 set consumed_at=? where … consumed_at is null …  -> updated 1
+  4  c2 t1  update refresh_tokens rte1_0 set consumed_at=? where … consumed_at is null …  -> updated 0 after waiting for a lock
+  …
+  7  c1 t1  COMMIT  -> done
+  8  c3 t1  select … where … token_hash=?  -> rows
+  9  c3 t1  update refresh_tokens set … revoked_at=? … where id=?  -> updated 1 after waiting for a lock
+ 10  c2 t1  ROLLBACK  -> done
+ 11  c3 t1  COMMIT  -> done
+```
+
+So trust-platform now revokes the family after the losing grant has rolled back.
+The specimens are [`RefreshTokenReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/RefreshTokenReuse.java)
+and [`CodeReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/CodeReuse.java).
+
+## A zoo of racy methods
+
+The trust-platform race is one of five specimens, each kept next to its fix and
+run on PostgreSQL at its default, READ COMMITTED. The checker has to catch every
+bug and pass every fix having judged every order, with a bound of two
+preemptions:
+
+| Specimen | The code | What goes wrong | The fix |
+|---|---|---|---|
+| [`Overdraft`](src/test/java/com/sahilkalgutkar/txrace/zoo/Overdraft.java) | check the balance, then `SET balance = balance - ?` | both payments pass the check, and 100 ends at -20 | check in the update: `WHERE balance >= ?` |
+| [`DuplicateSignup`](src/test/java/com/sahilkalgutkar/txrace/zoo/DuplicateSignup.java) | look for the email, then insert it | one address, two accounts | a unique index, and `ON CONFLICT DO NOTHING` to say who lost |
+| [`LastOwner`](src/test/java/com/sahilkalgutkar/txrace/zoo/LastOwner.java) | count the owners, leave if there are two | both leave, and the team has no owner | lock the team's row before counting |
+| [`RefreshTokenReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/RefreshTokenReuse.java) | trust-platform's refresh grant | two live tokens in one family | a conditional update, with zero rows meaning a replay |
+| [`CodeReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/CodeReuse.java) | trust-platform's code grant | one code, two sets of tokens | the same |
+
+The overdraft is the one people get wrong after fixing the lost update: a
+relative update keeps both payments, but the check was made on a balance the
+other payment was about to change.
+
+The last owner taught me something about the fix. Locking the team's row makes
+the second owner wait, and at READ COMMITTED its count then runs after the first
+owner has gone. At REPEATABLE READ the same fix fails, and the checker finds the
+order: the snapshot is taken when the first statement starts, and the second
+owner's first statement is the lock it waits on, so it counts from a snapshot
+older than the wait.
+
 ## Status
 
 - [x] JDBC proxy, gate and trace
@@ -379,7 +470,7 @@ a failed batch keeps its per-row counts. These are still open:
 - [x] Exploring orders, with a bound on preemptions
 - [x] Comparing each order against every serial order, and printing the shortest failing one
 - [x] The Hermitage anomaly cases as a test suite
-- [ ] A real target
+- [x] A real target: trust-platform's token grants, and a zoo of racy methods with their fixes
 - [ ] A JUnit extension, and a benchmark against plain stress testing
 
 ## Building
