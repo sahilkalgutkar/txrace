@@ -59,6 +59,23 @@ class PostgresZooTest {
                 .check(twin.transactions());
     }
 
+    private static boolean refusedByTheDatabase(Result result) {
+        return result instanceof Result.RolledBack rolledBack && rolledBack.cause() instanceof SQLException;
+    }
+
+    /**
+     * A fix passes only if its transactions did their work. The checker counts a transaction that
+     * failed with an SQLException as refused by the database and leaves it out, so a fix whose
+     * statements always failed would end like a serial run of nothing at all, and hold.
+     */
+    private static void assertHoldsWithNothingRefused(Verdict verdict) {
+        assertThat(verdict.holds()).isTrue();
+        assertThat(verdict.explored().runs()).allSatisfy(order -> {
+            assertThat(order.run().results()).noneMatch(PostgresZooTest::refusedByTheDatabase);
+            assertThat(order.run().results()).hasAtLeastOneElementOfType(Result.Committed.class);
+        });
+    }
+
     @Test
     void bothPaymentsPassTheCheckAndTheWalletGoesNegative() throws SQLException {
         Verdict verdict = check(new Overdraft(), new Overdraft().buggy());
@@ -72,7 +89,7 @@ class PostgresZooTest {
 
     @Test
     void checkingInTheUpdateDeclinesTheSecondPayment() throws SQLException {
-        assertThat(check(new Overdraft(), new Overdraft().fixed()).holds()).isTrue();
+        assertHoldsWithNothingRefused(check(new Overdraft(), new Overdraft().fixed()));
     }
 
     @Test
@@ -86,7 +103,7 @@ class PostgresZooTest {
 
     @Test
     void lettingTheConstraintDecideTellsTheSecondSignupItIsTaken() throws SQLException {
-        assertThat(check(new DuplicateSignup(), new DuplicateSignup().fixed()).holds()).isTrue();
+        assertHoldsWithNothingRefused(check(new DuplicateSignup(), new DuplicateSignup().fixed()));
     }
 
     @Test
@@ -102,7 +119,7 @@ class PostgresZooTest {
 
     @Test
     void lockingTheTeamFirstMakesTheSecondOwnerCountAgain() throws SQLException {
-        assertThat(check(new LastOwner(), new LastOwner().fixed()).holds()).isTrue();
+        assertHoldsWithNothingRefused(check(new LastOwner(), new LastOwner().fixed()));
     }
 
     /**
@@ -132,7 +149,7 @@ class PostgresZooTest {
 
     @Test
     void consumingTheTokenWithAConditionalUpdateTurnsTheSecondRefreshIntoAReplay() throws SQLException {
-        assertThat(check(new RefreshTokenReuse(), new RefreshTokenReuse().fixed()).holds()).isTrue();
+        assertHoldsWithNothingRefused(check(new RefreshTokenReuse(), new RefreshTokenReuse().fixed()));
     }
 
     /**
@@ -141,8 +158,15 @@ class PostgresZooTest {
      */
     @Test
     void repeatableReadWouldHaveRefusedTheSecondRefresh() throws SQLException {
-        assertThat(check(new RefreshTokenReuse(),
-                at(Connection.TRANSACTION_REPEATABLE_READ, new RefreshTokenReuse().buggy())).holds()).isTrue();
+        Verdict verdict = check(new RefreshTokenReuse(),
+                at(Connection.TRANSACTION_REPEATABLE_READ, new RefreshTokenReuse().buggy()));
+
+        assertThat(verdict.holds()).isTrue();
+        List<Result> results = verdict.explored().runs().stream().flatMap(order -> order.run().results().stream()).toList();
+        assertThat(results).filteredOn(PostgresZooTest::refusedByTheDatabase).isNotEmpty().allSatisfy(result ->
+                assertThat(((SQLException) ((Result.RolledBack) result).cause()).getSQLState()).isEqualTo("40001"));
+        assertThat(verdict.explored().runs()).allSatisfy(order ->
+                assertThat(order.run().results()).hasAtLeastOneElementOfType(Result.Committed.class));
     }
 
     @Test
@@ -156,7 +180,7 @@ class PostgresZooTest {
 
     @Test
     void consumingTheCodeWithAConditionalUpdateTurnsTheSecondExchangeIntoAReplay() throws SQLException {
-        assertThat(check(new CodeReuse(), new CodeReuse().fixed()).holds()).isTrue();
+        assertHoldsWithNothingRefused(check(new CodeReuse(), new CodeReuse().fixed()));
     }
 
     /**
