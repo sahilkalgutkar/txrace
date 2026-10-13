@@ -223,6 +223,38 @@ final class TrustPlatform {
         }
     }
 
+    /** Hibernate's {@code findAllByFamilyId}, which the revocation used to start with. */
+    static List<Map<String, Object>> findTokensByFamily(Connection connection, UUID family) throws SQLException {
+        List<Map<String, Object>> tokens = new ArrayList<>();
+        try (PreparedStatement select = connection.prepareStatement("select rte1_0.id,rte1_0.client_id,"
+                + "rte1_0.consumed_at,rte1_0.expires_at,rte1_0.family_id,rte1_0.issued_at,rte1_0.revoked_at,"
+                + "rte1_0.scope,rte1_0.tenant_id,rte1_0.token_hash,rte1_0.user_id from refresh_tokens rte1_0 "
+                + "where rte1_0.tenant_id = ? and rte1_0.tenant_id = ? and rte1_0.family_id=?")) {
+            select.setObject(1, TENANT);
+            select.setObject(2, TENANT);
+            select.setObject(3, family);
+            try (ResultSet rows = select.executeQuery()) {
+                while (rows.next()) {
+                    tokens.add(row(rows));
+                }
+            }
+        }
+        return tokens;
+    }
+
+    /** The bulk revocation Hibernate generates for {@code RefreshTokenRepository.revokeUnrevoked}. */
+    static int revokeUnrevoked(Connection connection, UUID family) throws SQLException {
+        try (PreparedStatement update = connection.prepareStatement("update refresh_tokens rte1_0 set revoked_at=? "
+                + "where rte1_0.family_id=? and rte1_0.revoked_at is null "
+                + "and rte1_0.tenant_id = ? and rte1_0.tenant_id = ?")) {
+            update.setTimestamp(1, Timestamp.from(NOW));
+            update.setObject(2, family);
+            update.setObject(3, TENANT);
+            update.setObject(4, TENANT);
+            return update.executeUpdate();
+        }
+    }
+
     /** Every refresh token by its hash, followed by "consumed" or "revoked" where either is set. */
     static List<String> tokens(DataSource database) throws SQLException {
         List<String> tokens = new ArrayList<>();
@@ -239,14 +271,15 @@ final class TrustPlatform {
 
     static Map<String, Object> onlyRow(PreparedStatement select) throws SQLException {
         try (ResultSet rows = select.executeQuery()) {
-            if (!rows.next()) {
-                return null;
-            }
-            Map<String, Object> row = new LinkedHashMap<>();
-            for (int column = 1; column <= rows.getMetaData().getColumnCount(); column++) {
-                row.put(rows.getMetaData().getColumnName(column), rows.getObject(column));
-            }
-            return row;
+            return rows.next() ? row(rows) : null;
         }
+    }
+
+    private static Map<String, Object> row(ResultSet rows) throws SQLException {
+        Map<String, Object> row = new LinkedHashMap<>();
+        for (int column = 1; column <= rows.getMetaData().getColumnCount(); column++) {
+            row.put(rows.getMetaData().getColumnName(column), rows.getObject(column));
+        }
+        return row;
     }
 }

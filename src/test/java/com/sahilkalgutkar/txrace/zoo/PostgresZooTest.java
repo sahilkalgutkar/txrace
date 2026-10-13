@@ -15,9 +15,7 @@ import com.sahilkalgutkar.txrace.trace.Trace;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.sql.Timestamp;
 import java.util.List;
-import java.util.Map;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,7 +29,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 class PostgresZooTest {
 
     private static final List<Specimen> ZOO = List.of(new Overdraft(), new DuplicateSignup(), new LastOwner(),
-            new RefreshTokenReuse(), new CodeReuse());
+            new RefreshTokenReuse(), new CodeReuse(), new FamilyRevocation());
 
     private DataSource postgres;
 
@@ -183,6 +181,20 @@ class PostgresZooTest {
         assertHoldsWithNothingRefused(check(new CodeReuse(), new CodeReuse().fixed()));
     }
 
+    @Test
+    void aRevocationThatReadsTheFamilyFirstMissesTheTokenARefreshIsIssuing() throws SQLException {
+        Verdict verdict = check(new FamilyRevocation(), new FamilyRevocation().buggy());
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order -> assertThat(order.state())
+                .isEqualTo(List.of("presented revoked", "rotated away consumed revoked", "rotated by 1")));
+    }
+
+    @Test
+    void revokingUntilNoneAreLeftCatchesTheTokenTheRefreshIssued() throws SQLException {
+        assertHoldsWithNothingRefused(check(new FamilyRevocation(), new FamilyRevocation().fixed()));
+    }
+
     /**
      * Why trust-platform revokes the family only once the losing grant has rolled back. The
      * loser's conditional update waits for the winner and then changes nothing, but PostgreSQL
@@ -192,15 +204,10 @@ class PostgresZooTest {
     @Test
     void theRefreshThatLosesStillHoldsTheTokensRow() throws SQLException {
         RefreshTokenReuse.issued(postgres);
-        Transaction revoke = connection -> {
-            Map<String, Object> token = TrustPlatform.findTokenByHash(connection, RefreshTokenReuse.HASH);
-            token.put("revoked_at", Timestamp.from(TrustPlatform.NOW));
-            TrustPlatform.updateToken(connection, token);
-            return "revoked";
-        };
 
-        Run run = new Scheduler(postgres).run(Schedule.parse("1 2 1 2 1 1 1 3 3 2 3"),
-                RefreshTokenReuse.consumeIfUnused(1), RefreshTokenReuse.consumeIfUnused(2), revoke);
+        Run run = new Scheduler(postgres).run(Schedule.parse("1 2 1 2 1 1 1 3 2 3 3"),
+                RefreshTokenReuse.consumeIfUnused(1), RefreshTokenReuse.consumeIfUnused(2),
+                FamilyRevocation.revokeUntilNoneAreLeft());
 
         assertThat(run.result(1)).isEqualTo(new Result.Committed("rotated by 1"));
         assertThat(run.result(2)).isInstanceOfSatisfying(Result.RolledBack.class,
