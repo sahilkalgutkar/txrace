@@ -7,11 +7,17 @@ import com.sahilkalgutkar.txrace.check.Verdict;
 import com.sahilkalgutkar.txrace.jdbc.PostgresExtension;
 import com.sahilkalgutkar.txrace.schedule.Explorer;
 import com.sahilkalgutkar.txrace.schedule.Result;
+import com.sahilkalgutkar.txrace.schedule.Run;
+import com.sahilkalgutkar.txrace.schedule.Schedule;
+import com.sahilkalgutkar.txrace.schedule.Scheduler;
 import com.sahilkalgutkar.txrace.schedule.Transaction;
+import com.sahilkalgutkar.txrace.trace.Trace;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.util.List;
+import java.util.Map;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -151,5 +157,34 @@ class PostgresZooTest {
     @Test
     void consumingTheCodeWithAConditionalUpdateTurnsTheSecondExchangeIntoAReplay() throws SQLException {
         assertThat(check(new CodeReuse(), new CodeReuse().fixed()).holds()).isTrue();
+    }
+
+    /**
+     * Why trust-platform revokes the family only once the losing grant has rolled back. The
+     * loser's conditional update waits for the winner and then changes nothing, but PostgreSQL
+     * keeps the row locked until the loser ends, so revoking the token before then has to wait.
+     * Started from inside the loser's own request, that wait would never end.
+     */
+    @Test
+    void theRefreshThatLosesStillHoldsTheTokensRow() throws SQLException {
+        RefreshTokenReuse.issued(postgres);
+        Transaction revoke = connection -> {
+            Map<String, Object> token = TrustPlatform.findTokenByHash(connection, RefreshTokenReuse.HASH);
+            token.put("revoked_at", Timestamp.from(TrustPlatform.NOW));
+            TrustPlatform.updateToken(connection, token);
+            return "revoked";
+        };
+
+        Run run = new Scheduler(postgres).run(Schedule.parse("1 2 1 2 1 1 1 3 3 2 3"),
+                RefreshTokenReuse.consumeIfUnused(1), RefreshTokenReuse.consumeIfUnused(2), revoke);
+
+        assertThat(run.result(1)).isEqualTo(new Result.Committed("rotated by 1"));
+        assertThat(run.result(2)).isInstanceOfSatisfying(Result.RolledBack.class,
+                rolledBack -> assertThat(rolledBack.cause()).isInstanceOf(TrustPlatform.Replay.class));
+        assertThat(run.result(3)).isEqualTo(new Result.Committed("revoked"));
+        Trace.Event revocation = run.trace().of(3).stream()
+                .filter(event -> event.step().sql() != null && event.step().sql().startsWith("update"))
+                .findFirst().orElseThrow();
+        assertThat(revocation.waited()).as(run.trace().render()).isTrue();
     }
 }
