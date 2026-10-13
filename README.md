@@ -449,6 +449,8 @@ revocation now repeats that update until it revokes nothing, which is the
 second pass in the trace above. With one pass, the checker still finds an order
 that leaves a live token.
 
+The fixes, with integration tests that race real requests on PostgreSQL, are in
+[trust-platform#9](https://github.com/sahilkalgutkar/trust-platform/pull/9).
 The specimens are [`RefreshTokenReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/RefreshTokenReuse.java),
 [`CodeReuse`](src/test/java/com/sahilkalgutkar/txrace/zoo/CodeReuse.java) and
 [`FamilyRevocation`](src/test/java/com/sahilkalgutkar/txrace/zoo/FamilyRevocation.java).
