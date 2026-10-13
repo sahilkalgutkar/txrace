@@ -24,7 +24,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ExtendWith(PostgresExtension.class)
 class PostgresZooTest {
 
-    private static final List<Specimen> ZOO = List.of(new Overdraft(), new DuplicateSignup(), new LastOwner());
+    private static final List<Specimen> ZOO = List.of(new Overdraft(), new DuplicateSignup(), new LastOwner(),
+            new RefreshTokenReuse(), new CodeReuse());
 
     private DataSource postgres;
 
@@ -109,5 +110,46 @@ class PostgresZooTest {
 
         assertThat(verdict.holds()).isFalse();
         assertThat(verdict.counterexample()).hasValueSatisfying(order -> assertThat(order.state()).isEqualTo(List.of()));
+    }
+
+    @Test
+    void twoRefreshesOfOneTokenLeaveItsFamilyWithTwoLiveTokens() throws SQLException {
+        Verdict verdict = check(new RefreshTokenReuse(), new RefreshTokenReuse().buggy());
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order -> {
+            assertThat(order.state()).isEqualTo(List.of("presented consumed", "rotated by 1", "rotated by 2"));
+            assertThat(order.run().results())
+                    .containsExactly(new Result.Committed("rotated by 1"), new Result.Committed("rotated by 2"));
+        });
+    }
+
+    @Test
+    void consumingTheTokenWithAConditionalUpdateTurnsTheSecondRefreshIntoAReplay() throws SQLException {
+        assertThat(check(new RefreshTokenReuse(), new RefreshTokenReuse().fixed()).holds()).isTrue();
+    }
+
+    /**
+     * The race needs READ COMMITTED. Under REPEATABLE READ the second refresh's flush updates a
+     * row the first changed after its snapshot, and PostgreSQL refuses it.
+     */
+    @Test
+    void repeatableReadWouldHaveRefusedTheSecondRefresh() throws SQLException {
+        assertThat(check(new RefreshTokenReuse(),
+                at(Connection.TRANSACTION_REPEATABLE_READ, new RefreshTokenReuse().buggy())).holds()).isTrue();
+    }
+
+    @Test
+    void twoExchangesOfOneCodeBothGetTokens() throws SQLException {
+        Verdict verdict = check(new CodeReuse(), new CodeReuse().buggy());
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order ->
+                assertThat(order.state()).isEqualTo(List.of("code consumed", "issued to 1", "issued to 2")));
+    }
+
+    @Test
+    void consumingTheCodeWithAConditionalUpdateTurnsTheSecondExchangeIntoAReplay() throws SQLException {
+        assertThat(check(new CodeReuse(), new CodeReuse().fixed()).holds()).isTrue();
     }
 }
