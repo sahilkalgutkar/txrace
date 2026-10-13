@@ -62,6 +62,17 @@ final class FamilyRevocation implements Specimen {
         };
     }
 
+    /**
+     * One pass of the fix's update. It waits for the refresh's lock on the live token, but its
+     * snapshot was taken before the refresh inserted the new token, so the new token stays live.
+     */
+    static Transaction revokeOnce() {
+        return connection -> {
+            TrustPlatform.revokeUnrevoked(connection, RefreshTokenReuse.FAMILY);
+            return "revoked";
+        };
+    }
+
     static Transaction revokeUntilNoneAreLeft() {
         return connection -> {
             int revoked;

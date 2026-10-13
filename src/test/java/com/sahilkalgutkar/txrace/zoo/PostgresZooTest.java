@@ -195,6 +195,18 @@ class PostgresZooTest {
         assertHoldsWithNothingRefused(check(new FamilyRevocation(), new FamilyRevocation().fixed()));
     }
 
+    @Test
+    void oneUpdateOfTheFamilyStillMissesTheTokenTheRefreshIssued() throws SQLException {
+        Specimen.Twin onePass = new Specimen.Twin(FamilyRevocation::rotatedOnce,
+                List.of(RefreshTokenReuse.consumeIfUnused(1), FamilyRevocation.revokeOnce()));
+
+        Verdict verdict = check(new FamilyRevocation(), onePass);
+
+        assertThat(verdict.holds()).isFalse();
+        assertThat(verdict.counterexample()).hasValueSatisfying(order -> assertThat(order.state())
+                .isEqualTo(List.of("presented consumed revoked", "rotated away consumed revoked", "rotated by 1")));
+    }
+
     /**
      * Why trust-platform revokes the family only once the losing grant has rolled back. The
      * loser's conditional update waits for the winner and then changes nothing, but PostgreSQL
