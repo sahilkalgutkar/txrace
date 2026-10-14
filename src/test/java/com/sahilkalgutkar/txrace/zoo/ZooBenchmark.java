@@ -32,7 +32,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
  * How a plain stress test does against exploration on each bug in the zoo. Not part of the build,
- * since it takes a couple of minutes and its numbers depend on the machine: run it with
+ * since it takes about ten minutes and its numbers depend on the machine: run it with
  * {@code ./mvnw test -Dtest=ZooBenchmark}, and it prints a table.
  *
  * <p>The stress test is the one people write: each transaction on a thread of its own and a
