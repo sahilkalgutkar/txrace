@@ -8,6 +8,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -52,7 +53,13 @@ final class FamilyRevocation implements Specimen {
     /** The revocation as it was: every token read, then each saved with its revocation set. */
     static Transaction readThenSave() {
         return connection -> {
-            for (Map<String, Object> token : TrustPlatform.findTokensByFamily(connection, RefreshTokenReuse.FAMILY)) {
+            List<Map<String, Object>> family = TrustPlatform.findTokensByFamily(connection, RefreshTokenReuse.FAMILY);
+            // The select has no ORDER BY, so PostgreSQL returns the rows as they lie on disk, and that
+            // changes once vacuum has freed space. Then the same order of steps saves the tokens in a
+            // different order, and the explorer's count of failing orders changed between runs.
+            // Hibernate's order isn't defined either; sorting picks one.
+            family.sort(Comparator.comparing(token -> (String) token.get("token_hash")));
+            for (Map<String, Object> token : family) {
                 if (token.get("revoked_at") == null) {
                     token.put("revoked_at", Timestamp.from(NOW));
                     TrustPlatform.updateToken(connection, token);
