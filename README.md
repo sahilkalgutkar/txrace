@@ -4,29 +4,45 @@
 [![codecov](https://codecov.io/gh/sahilkalgutkar/txrace/branch/main/graph/badge.svg)](https://codecov.io/gh/sahilkalgutkar/txrace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-I'm building a tool that runs concurrent JDBC transactions one statement at a
-time, walks through the orders they could have run in, and reports any order
-whose result no serial execution could have produced.
+I built txrace to run concurrent JDBC transactions one statement at a time,
+walk through the orders they could have run in, and report any order whose
+result no serial execution could have produced, as a trace you can read and
+replay.
 
 The bugs I'm after live in service code, not in the database: read a row,
 check something, write. That pattern quietly assumes an isolation level it
 doesn't have, and it passes every test because tests run one request at a time.
 
-## What works so far
+What it found:
+
+- **Two races in my own OAuth provider.** Two concurrent refreshes of one token
+  both succeeded and left two live tokens in the family, and the revocation
+  meant to catch that could miss a token being issued at the same moment. Both
+  are fixed in [trust-platform](https://github.com/sahilkalgutkar/trust-platform)
+  with integration tests that race real requests. [The story is below](#the-bug-i-went-looking-for).
+- **A fix that looked right and wasn't.** A single bulk revocation still missed
+  the new token. A stress test that released both requests together caught it
+  in 2 of 3000 trials; txrace found it on the second order it ran. [Numbers below](#stress-testing-against-exploration).
+- **Hermitage's PostgreSQL table, all 30 cells**, reproduced from scheduled
+  runs, and a first table for H2. [See Hermitage](#hermitage).
+
+There is a JUnit 5 test type for using it, `@RaceTest`. [See below](#using-it-from-junit).
+
+## Tracing every statement
 
 The interception layer. `TracingDataSource` wraps any `DataSource` and hands
 out connections whose statements, batches, commits and rollbacks each become a
 step. Every step passes through a `Gate` before it reaches the driver and again
 once the driver has answered, and lands in a `Trace` with its bound parameters
-and what came back. The gate is where the scheduler will hold a transaction
-back until its turn.
+and what came back. The gate is where the scheduler holds a transaction back
+until its turn.
 
 I used dynamic proxies rather than hand-written wrappers because `Connection`
 alone has more than fifty methods and almost all of them should pass straight
 through. The handful that matter are picked out by name.
 
-To check the layer end to end, I wrote the order the scheduler will eventually
-find by itself: two deposits into one account, interleaved by hand on H2 at its
+To check the layer end to end, I first wrote by hand an order the scheduler
+now finds by itself: two deposits into one account, interleaved on H2 at its
 default isolation level. Each transaction reads the balance, adds its deposit
 and writes the result back. Either serial order ends at 180, and this one ends
 at 150:
@@ -484,6 +500,121 @@ order: the snapshot is taken when the first statement starts, and the second
 owner's first statement is the lock it waits on, so it counts from a snapshot
 older than the wait.
 
+## Stress testing against exploration
+
+The obvious alternative to all of this is a stress test: start the
+transactions on real threads at the same moment, many times, and look at what
+they leave behind. [`ZooBenchmark`](src/test/java/com/sahilkalgutkar/txrace/zoo/ZooBenchmark.java)
+runs one against each bug in the zoo, 1000 trials a row, and judges every
+trial the way the checker judges an order, against the endings of the serial
+orders. It releases the threads at the same instant, which is the best a
+stress test can do, then up to 1 ms and up to 10 ms apart, which is closer to
+how two requests arrive. The last row is the one-pass revocation, the fix that
+looked right and wasn't. One run on my laptop (Apple silicon, the embedded
+PostgreSQL 18):
+
+| Bug | Exploration, up to two preemptions | Stress, together | up to 1 ms apart | up to 10 ms apart |
+|---|---|---|---|---|
+| `Overdraft` | 10 of 12 orders fail, first at #2 (1.1 s) | 1000/1000, first at #1 | 475/1000, first at #1 | 281/1000, first at #1 |
+| `DuplicateSignup` | 12 of 14 orders fail, first at #2 (263 ms) | 1000/1000, first at #1 | 430/1000, first at #3 | 271/1000, first at #15 |
+| `LastOwner` | 12 of 14 orders fail, first at #2 (260 ms) | 1000/1000, first at #1 | 528/1000, first at #4 | 251/1000, first at #1 |
+| `RefreshTokenReuse` | 38 of 40 orders fail, first at #2 (2.4 s) | 1000/1000, first at #1 | 741/1000, first at #2 | 288/1000, first at #3 |
+| `CodeReuse` | 38 of 40 orders fail, first at #2 (2.4 s) | 1000/1000, first at #1 | 830/1000, first at #1 | 306/1000, first at #2 |
+| `FamilyRevocation` | 11 of 21 orders fail, first at #2 (2.5 s) | 48/1000, first at #7 | 260/1000, first at #7 | 50/1000, first at #15 |
+| `FamilyRevocation`, one pass | 3 of 9 orders fail, first at #2 (1.2 s) | 0/1000, never | 180/1000, first at #3 | 10/1000, first at #21 |
+
+I expected exploration to win at finding the bugs, and on most of these it
+doesn't. With nothing between the statements and the database on the same
+machine, a stress test that releases both transactions together catches five
+of the six original bugs on its first trial. Spread the start out to 10 ms and
+it still catches them in 15% to 31% of trials, across three runs. These are
+wide races, and a few hundred trials find them.
+
+The difference is the two revocation rows, where the window is narrow. The
+revocation has to land after the refresh has consumed the token and before it
+commits the new one. Released together, the revocation's first statement
+nearly always runs before the refresh has consumed anything, which is
+harmless, so the original bug showed in 48 trials of 1000 and the one-pass fix
+in none. Only a start that happens to be spread out finds the window, and
+spreading it further makes it rare again: the one-pass fix showed in 180
+trials at up to 1 ms apart and in 10 at up to 10 ms. Exploration found both on
+the second order it ran, and the whole check of the one-pass fix took 1.2
+seconds.
+
+The rest is what a stress test can't give however often it hits. A failing
+trial says the bug happened, not how: there's no trace, and the next run may
+not do it again. A passing stress test says the bug wasn't seen. A passing
+check says every order with up to two preemptions ended the way a serial order
+does, which is a statement about the fix rather than about the luck of the
+run. The real fixes went through 3000 stress trials each without being flagged,
+but that is the harness checking itself, not evidence the fixes are right.
+
+Exploration's counts are the same on every run. The stress rates move: across
+three runs, the overdraft at up to 10 ms apart was caught in 175, 176 and 281
+trials of 1000, and the one-pass fix released together in 0, 2 and 0.
+
+## Prior work
+
+- **CHESS** (Musuvathi and Qadeer, PLDI 2007; Musuvathi et al., OSDI 2008)
+  explores the thread interleavings of a program without storing states, under
+  a bound on preemptions, and showed that most concurrency bugs need very few.
+  The explorer is that search, with SQL statements as the steps and the
+  database as the shared state.
+- **[Hermitage](https://github.com/ept/hermitage)** (Martin Kleppmann) is the
+  catalogue of isolation anomalies, with a table of which ones each database
+  prevents. Reproducing its PostgreSQL row was my check that the scheduler runs
+  statements in the order it says.
+- **ACIDRain** (Warszawski and Bailis, SIGMOD 2017) found exploitable races of
+  this read-check-write shape in widely used e-commerce applications, working
+  from the SQL they log. It is the argument that these bugs matter outside a
+  test suite: someone can send the second request on purpose.
+- **[Elle](https://github.com/jepsen-io/elle)** (Kingsbury and Alvaro,
+  VLDB 2020) checks histories from real concurrent runs for Adya's anomalies,
+  using workloads designed so each read reveals the order of versions, such as
+  appending to lists. It tests the database. txrace assumes the database is
+  right and tests the code on top of it, which is why it compares outcomes
+  with serial runs instead of building a dependency graph: application code
+  doesn't write values that reveal their versions, and a JDBC proxy can't see
+  which rows a statement touched.
+- Adya's thesis, *Weak Consistency* (MIT, 1999), and Berenson et al.,
+  *A Critique of ANSI SQL Isolation Levels* (SIGMOD 1995), are where the
+  anomaly names come from.
+
+## Limits
+
+- **The number of orders.** It grows factorially with the steps. The two
+  refreshes in the zoo already have 182 orders, and every order runs against a
+  freshly reset database, so txrace is for two or three short transactions,
+  not a whole request path. The bound keeps it practical, 40 of those 182 with
+  two preemptions, and found every bug in the zoo. It also limits the claim: a
+  passing check says no order within the bound ends badly, not that none does.
+- **Outcomes, not dependencies.** The check compares what the transactions
+  returned and what the observation reads. An anomaly that changes nothing
+  observed passes, as write skew did when the transactions only counted rows,
+  so what you observe decides what can be found.
+- **The same start every time.** The starting state is put back before every
+  order, and anything that differs on every run, such as generated keys,
+  tokens and timestamps, has to be left out of the endings or ignored.
+- **The same steps have to mean the same statements.** The scheduler replays
+  the order of steps exactly, not what each step does. A transaction that
+  loops over a `SELECT` without `ORDER BY` gets the rows in the order they lie
+  on disk, which can change once vacuum has freed space, and then the same
+  order of steps runs its updates in a different order. The explorer checks
+  that each replay is offered the same transactions at every step, which
+  doesn't catch this. I hit it in the benchmark: the revocation specimen's
+  count of failing orders went from 11 in one run to 12 in the next, after the
+  stress trials before it had churned the table. Sorting the rows it saves
+  fixed that.
+- **One JDBC connection per transaction.** Work done on another connection,
+  another thread or a non-JDBC driver isn't scheduled. Code behind a framework
+  has to be reached through its SQL, which is why I replayed Hibernate's log
+  for trust-platform rather than calling the service.
+- **Lock waits cost time.** On PostgreSQL each wait costs `deadlock_timeout`,
+  once per order it occurs in, so a test database wants it set low. Databases
+  other than H2 and PostgreSQL aren't watched for lock waits at all, so a step
+  stuck on a lock there runs into the timeout.
+- The interception gaps under [Known gaps](#known-gaps).
+
 ## Status
 
 - [x] JDBC proxy, gate and trace
@@ -493,7 +624,7 @@ older than the wait.
 - [x] Comparing each order against every serial order, and printing the shortest failing one
 - [x] The Hermitage anomaly cases as a test suite
 - [x] A real target: trust-platform's token grants, and a zoo of racy methods with their fixes
-- [ ] A JUnit extension, and a benchmark against plain stress testing
+- [x] A JUnit extension, and a benchmark against plain stress testing
 
 ## Building
 
@@ -503,4 +634,11 @@ binaries in the build, so neither Docker nor a local install is needed.
 
 ```bash
 ./mvnw verify
+```
+
+The stress benchmark isn't part of the build, because it takes about ten
+minutes and its numbers depend on the machine:
+
+```bash
+./mvnw test -Dtest=ZooBenchmark
 ```
