@@ -291,6 +291,18 @@ class RaceExtensionTest {
         }
     }
 
+    @ExtendWith(RaceExtension.class)
+    static class OrdinaryTest {
+        @Test
+        void takesNoRace() {
+        }
+    }
+
+    @Test
+    void anOrdinaryTestNextToTheExtensionIsLeftAlone() {
+        assertPasses(OrdinaryTest.class);
+    }
+
     static class TwoRaces {
         @RaceTest
         void wantsTwo(Race first, Race second) {
