@@ -22,7 +22,7 @@ What it found:
   with integration tests that race real requests. [The story is below](#the-bug-i-went-looking-for).
 - **A fix that looked right and wasn't.** A single bulk revocation still missed
   the new token. A stress test that released both requests together caught it
-  in 2 of 3000 trials; txrace found it on the second order it ran. [Numbers below](#stress-testing-against-exploration).
+  in 2 of 4000 trials; txrace found it on the second order it ran. [Numbers below](#stress-testing-against-exploration).
 - **Hermitage's PostgreSQL table, all 30 cells**, reproduced from scheduled
   runs, and a first table for H2. [See Hermitage](#hermitage).
 
@@ -527,7 +527,7 @@ I expected exploration to win at finding the bugs, and on most of these it
 doesn't. With nothing between the statements and the database on the same
 machine, a stress test that releases both transactions together catches five
 of the six original bugs on its first trial. Spread the start out to 10 ms and
-it still catches them in 15% to 31% of trials, across three runs. These are
+it still catches them in 15% to 31% of trials, across four runs. These are
 wide races, and a few hundred trials find them.
 
 The difference is the two revocation rows, where the window is narrow. The
@@ -550,8 +550,8 @@ run. The real fixes went through 3000 stress trials each without being flagged,
 but that is the harness checking itself, not evidence the fixes are right.
 
 Exploration's counts are the same on every run. The stress rates move: across
-three runs, the overdraft at up to 10 ms apart was caught in 175, 176 and 281
-trials of 1000, and the one-pass fix released together in 0, 2 and 0.
+four runs, the overdraft at up to 10 ms apart was caught in 175, 176, 281 and
+276 trials of 1000, and the one-pass fix released together in 0, 2, 0 and 0.
 
 ## Prior work
 
