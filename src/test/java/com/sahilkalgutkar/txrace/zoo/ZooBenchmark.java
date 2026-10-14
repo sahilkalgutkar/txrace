@@ -57,7 +57,7 @@ class ZooBenchmark {
     private record Row(String name, Specimen specimen, Specimen.Twin twin) {}
 
     /** How one way of looking for a bug did: how often it saw it, and how soon. */
-    private record Detection(int hits, int tries, int firstAt, long firstNanos, long totalNanos) {
+    private record Detection(int hits, int tries, int firstAt, long totalNanos) {
 
         String describe() {
             return hits + "/" + tries + (hits == 0 ? ", never" : ", first at #" + firstAt);
@@ -122,26 +122,23 @@ class ZooBenchmark {
                 break;
             }
         }
-        // The check's time is not split by order, so the first failing order has no time of its own.
-        return new Detection(verdict.violations().size(), runs.size(), first, totalNanos, totalNanos);
+        return new Detection(verdict.violations().size(), runs.size(), first, totalNanos);
     }
 
     private static Detection stress(DataSource database, Specimen specimen, Specimen.Twin twin, Set<Ending> serial,
-            long jitterNanos, ExecutorService threads) throws Exception {
+            long spreadNanos, ExecutorService threads) throws Exception {
         int hits = 0;
         int firstAt = 0;
-        long firstNanos = 0;
         long start = System.nanoTime();
         for (int trial = 1; trial <= TRIALS; trial++) {
-            if (!serial.contains(once(database, specimen, twin, jitterNanos, threads))) {
+            if (!serial.contains(once(database, specimen, twin, spreadNanos, threads))) {
                 hits++;
                 if (firstAt == 0) {
                     firstAt = trial;
-                    firstNanos = System.nanoTime() - start;
                 }
             }
         }
-        return new Detection(hits, TRIALS, firstAt, firstNanos, System.nanoTime() - start);
+        return new Detection(hits, TRIALS, firstAt, System.nanoTime() - start);
     }
 
     private static void assertFixedTwinNeverFlagged(DataSource database, Specimen specimen, ExecutorService threads) {
@@ -160,14 +157,14 @@ class ZooBenchmark {
     }
 
     /** One trial: every transaction at once, each on its own thread and connection, then what it left. */
-    private static Ending once(DataSource database, Specimen specimen, Specimen.Twin twin, long jitterNanos,
+    private static Ending once(DataSource database, Specimen specimen, Specimen.Twin twin, long spreadNanos,
             ExecutorService threads) throws Exception {
         twin.reset().prepare(database);
         List<Transaction> transactions = twin.transactions();
         CyclicBarrier start = new CyclicBarrier(transactions.size());
         List<Future<Result>> running = new ArrayList<>();
         for (Transaction transaction : transactions) {
-            long delay = jitterNanos == 0 ? 0 : ThreadLocalRandom.current().nextLong(jitterNanos);
+            long delay = spreadNanos == 0 ? 0 : ThreadLocalRandom.current().nextLong(spreadNanos);
             running.add(threads.submit(() -> alone(database, transaction, start, delay)));
         }
         List<Result> results = new ArrayList<>();
