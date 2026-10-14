@@ -50,9 +50,21 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- For RaceTest and its extension. Optional, because a project that uses them already
+         has JUnit, and one that doesn't use them doesn't need it. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <optional>true</optional>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-testkit</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
