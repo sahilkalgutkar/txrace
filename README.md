@@ -273,6 +273,39 @@ transactions that return something new every run, like a token. And
 `judgingBy(invariant)` replaces the serial orders with a rule every ending must
 keep.
 
+## Using it from JUnit
+
+`@RaceTest` is a JUnit 5 test that races transactions. The method takes a
+`Race`, says what every run starts from and which transactions to run, and
+once it returns, the extension judges every order within the bound. The
+`DataSource` comes from wherever the rest of your tests get theirs:
+
+```java
+@RaceTest(preemptions = 2)
+void depositsAreNeverLost(Race race, DataSource database) throws SQLException {
+    race.on(database)
+            .startingFrom(Accounts::open)
+            .observing(Accounts::balance)
+            .run(deposit(30), deposit(50));
+}
+```
+
+That test fails, and its failure message is a report like the one above, with
+the order that loses a deposit laid out in columns. There is nothing to assert: the
+judging happens after the method returns, so a test that forgets to call
+`run` fails instead of passing with nothing checked. `run` still returns the
+`Verdict` for a test that wants to look closer, and the report is published as
+a JUnit report entry either way.
+
+A race that is known and not fixed yet can be pinned with
+`@RaceTest(expect = Expect.RACE)`. The test passes while some order still ends
+in a way no serial order does, and fails once none does, which is the moment
+to flip it back. `ignoringReturnValues()`, `judgingBy(invariant)` and
+`withTimeout(duration)` work as they do on the checker, and `@RaceTest` can go
+on an annotation of your own to fix a bound for a whole suite. JUnit is an
+optional dependency, so a project that doesn't use the extension doesn't pull
+it in.
+
 ## Hermitage
 
 Martin Kleppmann's [Hermitage](https://github.com/ept/hermitage) is the
